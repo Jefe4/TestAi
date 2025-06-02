@@ -1,167 +1,233 @@
 # src/coordinator/task_analyzer.py
 """
-Analyzes incoming queries to determine their nature and suggest suitable agents.
+Analyzes incoming queries to determine their nature and suggest suitable agents or predefined plans.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 try:
     from ..agents.base_agent import BaseAgent
     from ..utils.logger import get_logger
 except ImportError:
-    # Fallback for scenarios where the module might be run directly for testing
-    # or if the PYTHONPATH is not set up correctly during development.
     import sys
     import os
-    # Navigate up two levels to the 'src' directory, then to project root for utils/agents
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     from src.agents.base_agent import BaseAgent # type: ignore
     from src.utils.logger import get_logger # type: ignore
 
-
 class TaskAnalyzer:
     """
     Analyzes queries to understand their type, complexity, intent,
-    and to determine which agents might be best suited to handle them.
-
-    This is a basic implementation and can be expanded with more sophisticated
-    analysis techniques (e.g., NLP, keyword extraction, intent recognition models).
+    and to determine a sequential plan of agents or suggest agents based on capabilities.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initializes the TaskAnalyzer.
-
-        Args:
-            config: Optional configuration dictionary for the analyzer.
-                    Could be used for loading models, setting thresholds, etc.
         """
         self.config = config if config is not None else {}
-        self.logger = get_logger("TaskAnalyzer") # Using class name for the logger instance
-        self.logger.info(f"TaskAnalyzer initialized with config: {self.config}")
+        self.logger = get_logger("TaskAnalyzer")
+
+        self.keyword_map = {
+            "summarize_critique_and_keyword": { # New entry for testing overrides
+                "keywords": ["summarize critique and list keywords", "review critique and extract topics"],
+                "query_type": "advanced_text_processing",
+                "intent": "multi_step_critique_analysis",
+                "sequential_plan_template": [
+                    {"agent_name": "ClaudeAgent", "task_description": "Summarize input text"},
+                    {"agent_name": "DeepSeekAgent", "task_description": "Critique the summary.",
+                     "agent_config_overrides": {"temperature": 0.1, "max_tokens": 550}}, # Example override
+                    {"agent_name": "GeminiAgent", "task_description": "Extract keywords from the critique."}
+                ]
+            },
+            "code_related": {
+                "keywords": ["code", "python", "javascript", "function", "class", "algorithm", "debug", "script", "software"],
+                "intent": "coding_help",
+                "query_type": "code_generation_analysis",
+                "capabilities_needed": ["code_generation", "code_analysis", "complex_reasoning"]
+            },
+            "web_development": {
+                "keywords": ["css", "html", "react", "vue", "angular", "frontend", "website", "ui/ux", "web app"],
+                "intent": "web_dev_help",
+                "query_type": "web_development_assistance",
+                "capabilities_needed": ["web_development", "ui_ux", "frontend_frameworks", "css_styling"]
+            },
+            "question_answering": {
+                "keywords": ["what is", "who is", "explain", "define", "tell me about", "how does"],
+                "intent": "information_seeking",
+                "query_type": "q_and_a",
+                "capabilities_needed": ["q&a", "general_analysis", "text_generation"]
+            },
+            "summarization_simple": {
+                "keywords": ["summarize", "tl;dr", "tldr", "gist of", "overview for"],
+                "intent": "summarization_request",
+                "query_type": "text_summarization",
+                "capabilities_needed": ["summarization", "text_generation"]
+            },
+            "general_query": {
+                "keywords": [],
+                "intent": "general_interaction",
+                "query_type": "general_text_generation",
+                "capabilities_needed": ["text_generation", "general_purpose"]
+            }
+        }
+        self.logger.info(f"TaskAnalyzer initialized with config: {self.config} and keyword map.")
 
     def analyze_query(self, query: str, available_agents: Dict[str, BaseAgent]) -> Dict[str, Any]:
-        """
-        Analyzes the given query against the capabilities of available agents.
-
-        Args:
-            query: The user's query string.
-            available_agents: A dictionary of available agent instances,
-                              keyed by their names. The BaseAgent instances
-                              can be inspected for their capabilities.
-
-        Returns:
-            A dictionary containing the analysis of the query, including
-            a suggestion of which agents might be suitable.
-        """
         self.logger.info(f"Analyzing query: '{query[:100]}...' with {len(available_agents)} agents available.")
 
-        # Placeholder analysis logic.
-        # In a real system, this would involve more complex logic:
-        # - Keyword extraction from the query.
-        # - Intent recognition (e.g., "code_generation", "question_answering", "data_analysis").
-        # - Matching query intent with agent capabilities (obtained via agent.get_capabilities()).
-        # - Complexity assessment (simple, medium, complex) which might influence agent choice or workflow.
-        # - Potentially breaking down a complex query into sub-tasks.
+        lower_query = query.lower()
 
-        # For now, return a dummy analysis.
-        query_type = "unknown"
-        complexity = "medium"
-        intent = "unknown"
+        matched_entry = self.keyword_map["general_query"]
+        determined_query_type = matched_entry["query_type"]
+        determined_intent = matched_entry["intent"]
 
-        # Basic keyword matching example (can be significantly improved)
-        if "code" in query.lower() or "python" in query.lower() or "javascript" in query.lower():
-            query_type = "code_related"
-            intent = "code_generation_or_analysis"
-        elif "what is" in query.lower() or "who is" in query.lower() or "explain" in query.lower():
-            query_type = "question_answering"
-            intent = "information_retrieval"
-        elif "image" in query.lower() or "picture" in query.lower():
-            query_type = "multimodal_query" # If we had multimodal agents
-            intent = "image_processing_or_generation"
+        for type_name, type_info in self.keyword_map.items():
+            if type_name == "general_query": continue
+            if any(keyword in lower_query for keyword in type_info["keywords"]):
+                matched_entry = type_info
+                determined_query_type = type_info.get("query_type", type_name)
+                determined_intent = type_info["intent"]
+                self.logger.debug(f"Query matched type '{type_name}' (as {determined_query_type}) with intent '{determined_intent}'.")
+                break
 
+        if determined_query_type == self.keyword_map["general_query"]["query_type"]:
+             self.logger.debug(f"Query did not match specific types, defaulting to '{determined_query_type}'.")
 
-        # Suggest all agents for now, as we don't have capability matching yet.
-        # A more advanced version would filter agents based on `agent.get_capabilities()`.
-        suggested_agents_names: List[str] = []
-        if available_agents: # Ensure there are agents to suggest
-            suggested_agents_names = list(available_agents.keys())
+        suggested_agent_names: List[str] = []
+        execution_plan: List[Dict[str, Any]] = []
 
-        # If we had capability matching:
-        # for agent_name, agent_instance in available_agents.items():
-        #     capabilities = agent_instance.get_capabilities().get("capabilities", [])
-        #     if intent in capabilities or query_type in capabilities: # Simplistic match
-        #         suggested_agents_names.append(agent_name)
-        # if not suggested_agents_names and available_agents: # Fallback if no specific match
-        #    suggested_agents_names = list(available_agents.keys())
+        if "sequential_plan_template" in matched_entry:
+            plan_template = matched_entry["sequential_plan_template"]
+            self.logger.info(f"Found sequential plan template for intent '{determined_intent}': {plan_template}")
 
+            current_execution_plan_steps: List[Dict[str, Any]] = [] # Temp list to build plan before assigning
+            for i, step_template in enumerate(plan_template):
+                agent_name = step_template["agent_name"]
+                task_desc = step_template["task_description"]
+                agent_config_overrides = step_template.get("agent_config_overrides", {}) # Get overrides or empty dict
+
+                output_id = f"step{i+1}_{agent_name.lower()}"
+
+                current_step_input_mapping: Dict[str, Dict[str,str]] = {} # Outer dict for input types
+                if i == 0: # First step
+                    current_step_input_mapping["prompt"] = {"source": "original_query"}
+                else: # Subsequent steps
+                    # Uses output_id of the previously processed step in current_execution_plan_steps
+                    previous_step_output_id = current_execution_plan_steps[i-1]["output_id"]
+                    current_step_input_mapping["prompt"] = {"source": f"ref:{previous_step_output_id}.content"}
+
+                step_detail = {
+                    "agent_name": agent_name,
+                    "task_description": task_desc,
+                    "input_mapping": current_step_input_mapping,
+                    "output_id": output_id,
+                    "agent_config_overrides": agent_config_overrides # Add this to the plan step
+                }
+                current_execution_plan_steps.append(step_detail)
+
+            execution_plan = current_execution_plan_steps # Assign fully built plan
+            suggested_agent_names = []
+
+        elif "capabilities_needed" in matched_entry:
+            # ... (capability-based suggestion logic remains the same as before) ...
+            capabilities_needed = set(matched_entry["capabilities_needed"])
+            self.logger.debug(f"Looking for agents with capabilities: {capabilities_needed}")
+            if available_agents:
+                for agent_name, agent_instance in available_agents.items():
+                    try:
+                        agent_caps_dict = agent_instance.get_capabilities()
+                        agent_declared_capabilities = set(agent_caps_dict.get("capabilities", []))
+                        if not all(isinstance(c, str) for c in agent_declared_capabilities):
+                             self.logger.warning(f"Agent '{agent_name}' has malformed 'capabilities'. Skipping.")
+                             continue
+                        if capabilities_needed.intersection(agent_declared_capabilities):
+                            suggested_agent_names.append(agent_name)
+                            self.logger.debug(f"Agent '{agent_name}' matches. Declared: {agent_declared_capabilities}")
+                    except Exception as e:
+                        self.logger.error(f"Error processing capabilities for agent '{agent_name}': {e}", exc_info=True)
+
+                if not suggested_agent_names and determined_query_type != self.keyword_map["general_query"]["query_type"]:
+                    self.logger.info(f"No specific agents for '{determined_query_type}'. Trying general fallback.")
+                    fallback_caps = set(self.keyword_map["general_query"]["capabilities_needed"])
+                    for agent_name, agent_instance in available_agents.items():
+                        try:
+                            agent_declared_capabilities = set(agent_instance.get_capabilities().get("capabilities", []))
+                            if fallback_caps.intersection(agent_declared_capabilities) and agent_name not in suggested_agent_names:
+                                suggested_agent_names.append(agent_name)
+                                self.logger.debug(f"Agent '{agent_name}' added as general fallback.")
+                        except Exception as e:
+                             self.logger.error(f"Error during fallback capability check for agent '{agent_name}': {e}", exc_info=True)
+
+            if not suggested_agent_names and available_agents:
+                 self.logger.warning(f"No agents matched capabilities for query type '{determined_query_type}'.")
 
         analysis = {
             "original_query": query,
-            "query_type": query_type,
-            "complexity": complexity,  # Placeholder
-            "intent": intent,
-            "suggested_agents": suggested_agents_names,
-            "processed_query_for_agent": query, # Placeholder; could be modified/enhanced query
-            "requires_human_intervention": False # Placeholder
+            "query_type": determined_query_type,
+            "complexity": "medium",
+            "intent": determined_intent,
+            "suggested_agents": suggested_agent_names,
+            "execution_plan": execution_plan,
+            "processed_query_for_agent": query,
+            "requires_human_intervention": False
         }
 
-        self.logger.info(f"Analysis complete. Suggested agents: {analysis['suggested_agents']}. Intent: {analysis['intent']}")
+        self.logger.info(
+            f"Analysis complete. Query Type: '{determined_query_type}', Intent: '{determined_intent}', "
+            f"Plan steps: {len(execution_plan) if execution_plan else 'N/A'}, Suggested (if no plan): {suggested_agent_names if suggested_agent_names else 'N/A'}"
+        )
         return analysis
 
 if __name__ == '__main__':
-    # Example Usage (basic test)
-
-    # Mock BaseAgent and its get_capabilities for testing purposes
     class MockAgent(BaseAgent):
-        def __init__(self, name, capabilities_list=None):
-            super().__init__(name, {}) # No real config needed for this mock
-            self._capabilities = {"capabilities": capabilities_list if capabilities_list else []}
-            self.logger = get_logger(f"MockAgent.{name}") # type: ignore
+        def __init__(self, name, capabilities_data: Dict[str, Any]):
+            super().__init__(name, {})
+            self._capabilities_data = capabilities_data
+            self.logger = get_logger(f"MockAgent.{name}")
 
         def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
-            return {"status": "success", "content": f"Mock response from {self.agent_name} for {query_data.get('prompt')}"}
+            return {"status": "success", "content": f"Mock response from {self.agent_name} for {query_data.get('prompt') or query_data.get('prompt_parts')}"}
 
         def get_capabilities(self) -> Dict[str, Any]:
-            return self._capabilities
+            return self._capabilities_data
 
-    analyzer_config = {"analysis_mode": "basic"} # Example config
-    task_analyzer = TaskAnalyzer(config=analyzer_config)
+    analyzer = TaskAnalyzer()
 
-    agents_available = {
-        "CodeAgent": MockAgent("CodeAgent", ["code_generation_or_analysis", "code_related"]),
-        "InfoAgent": MockAgent("InfoAgent", ["information_retrieval", "question_answering"]),
-        "GeneralAgent": MockAgent("GeneralAgent", ["text_generation"])
+    agents_for_test = {
+        "CoderBot": MockAgent("CoderBot", {"description": "Codes", "capabilities": ["code_generation", "code_analysis", "complex_reasoning"]}),
+        "WebAppWizard": MockAgent("WebAppWizard", {"description": "Web", "capabilities": ["web_development", "css_styling", "text_generation"]}),
+        "InfoSeeker": MockAgent("InfoSeeker", {"description": "Q&A", "capabilities": ["q&a", "general_analysis", "text_generation"]}),
+        "ClaudeAgent": MockAgent("ClaudeAgent", {"description":"Summarizer", "capabilities":["summarization", "text_generation"]}),
+        "DeepSeekAgent": MockAgent("DeepSeekAgent", {"description":"Critiquer/Keyword Extractor", "capabilities":["code_analysis", "text_generation", "complex_reasoning"]}),
+        "GeminiAgent": MockAgent("GeminiAgent", {"description":"Keyword Extractor", "capabilities":["multimodal_input", "text_generation"]}),
+        "Chatty": MockAgent("Chatty", {"description": "General chat", "capabilities": ["text_generation", "general_purpose"]})
     }
 
-    test_query1 = "Generate a Python script for web scraping."
-    analysis1 = task_analyzer.analyze_query(test_query1, agents_available) # type: ignore
-    print(f"\nAnalysis for query 1 ('{test_query1}'):")
-    for key, value in analysis1.items():
-        print(f"  {key}: {value}")
-    # Expected: query_type = "code_related", intent = "code_generation_or_analysis"
+    print(f"--- TaskAnalyzer Demo with {len(agents_for_test)} Mock Agents ---")
+    queries_to_test = [
+        "summarize critique and list keywords for this document about AI ethics.", # Should trigger new plan
+        "Write a python script to list files in a directory.",
+        "Explain the theory of relativity.",
+        "Hello, how are you today?",
+    ]
 
-    test_query2 = "What is the capital of France?"
-    analysis2 = task_analyzer.analyze_query(test_query2, agents_available) # type: ignore
-    print(f"\nAnalysis for query 2 ('{test_query2}'):")
-    for key, value in analysis2.items():
-        print(f"  {key}: {value}")
-    # Expected: query_type = "question_answering", intent = "information_retrieval"
+    for i, test_query in enumerate(queries_to_test):
+        print(f"\n--- Query {i+1}: \"{test_query[:70]}...\" ---")
+        analysis_result = analyzer.analyze_query(test_query, agents_for_test)
+        print(f"  Original Query: {analysis_result['original_query'][:70]}...")
+        print(f"  Determined Query Type: {analysis_result['query_type']}")
+        print(f"  Determined Intent: {analysis_result['intent']}")
+        if analysis_result.get("execution_plan"):
+            print(f"  Execution Plan ({len(analysis_result['execution_plan'])} steps):")
+            for step_num, step_detail in enumerate(analysis_result['execution_plan']):
+                print(f"    Step {step_num+1}: Agent - {step_detail['agent_name']}, Task - '{step_detail['task_description']}'")
+                print(f"      Input Mapping: {step_detail['input_mapping']}")
+                print(f"      Output ID: {step_detail['output_id']}")
+                print(f"      Agent Config Overrides: {step_detail['agent_config_overrides']}")
+        if analysis_result.get("suggested_agents"):
+            print(f"  Suggested Agents (capability-based): {analysis_result['suggested_agents']}")
 
-    test_query3 = "Describe a sunset."
-    analysis3 = task_analyzer.analyze_query(test_query3, agents_available) # type: ignore
-    print(f"\nAnalysis for query 3 ('{test_query3}'):")
-    for key, value in analysis3.items():
-        print(f"  {key}: {value}")
-    # Expected: query_type = "unknown", intent = "unknown" (or matched by GeneralAgent if capabilities were used)
-
-    # Test with no available agents
-    analysis_no_agents = task_analyzer.analyze_query("Any query", {})
-    print(f"\nAnalysis for query with no agents:")
-    for key, value in analysis_no_agents.items():
-        print(f"  {key}: {value}")
-    assert analysis_no_agents["suggested_agents"] == []
-
-    print("\nTaskAnalyzer basic demonstration completed.")
+    print("\n--- TaskAnalyzer refined demonstration with structured plans and overrides completed. ---")

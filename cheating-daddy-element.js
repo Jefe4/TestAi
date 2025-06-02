@@ -669,6 +669,11 @@ class CheatingDaddyApp extends LitElement {
                 description: 'Get help with answering interview questions',
             },
             {
+                value: 'jefe',
+                name: 'Jefe (Coding Asst.)',
+                description: 'Proactive coding assistance based on screen and audio',
+            },
+            {
                 value: 'sales',
                 name: 'Sales Call',
                 description: 'Assist with sales conversations and objection handling',
@@ -724,6 +729,7 @@ class CheatingDaddyApp extends LitElement {
         ];
 
         const profileNames = {
+            jefe: 'Jefe (Coding Asst.)',
             interview: 'Job Interview',
             sales: 'Sales Call',
             meeting: 'Business Meeting',

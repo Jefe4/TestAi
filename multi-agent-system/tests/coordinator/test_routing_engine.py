@@ -27,7 +27,6 @@ class TestRoutingEngine(unittest.TestCase):
         self.no_fallback_config = {"fallback_to_first_available": False}
         self.engine_fb_disabled = RoutingEngine(config=self.no_fallback_config)
 
-
         self.mock_agent_a = MagicMock(spec=BaseAgent)
         self.mock_agent_a.get_name.return_value = "AgentA"
 
@@ -42,86 +41,93 @@ class TestRoutingEngine(unittest.TestCase):
             "AgentB": self.mock_agent_b,
             "AgentC": self.mock_agent_c
         }
-        # Reset logger mock calls for each test for the primary engine instance
         self.mock_logger_instance.reset_mock()
-
 
     def tearDown(self):
         self.logger_patcher.stop()
 
     def test_initialization(self):
-        # Test engine with fallback enabled (default for self.engine_fb_enabled)
         self.assertEqual(self.engine_fb_enabled.config, self.default_config)
         self.assertIsNotNone(self.engine_fb_enabled.logger)
-        # Check if get_logger was called for this instance
-        # Since get_logger is patched, any call to it will be recorded by self.mock_get_logger
-        # The logger instance for self.engine_fb_enabled should be self.mock_logger_instance
-        self.mock_get_logger.assert_any_call("RoutingEngine") # Called during init
+        self.mock_get_logger.assert_any_call("RoutingEngine")
         self.mock_logger_instance.info.assert_any_call(f"RoutingEngine initialized with config: {self.default_config}")
-        self.mock_logger_instance.reset_mock() # Clean for next test part
+        self.mock_logger_instance.reset_mock()
 
-        # Test engine with fallback disabled
         self.assertEqual(self.engine_fb_disabled.config, self.no_fallback_config)
         self.assertIsNotNone(self.engine_fb_disabled.logger)
         self.mock_logger_instance.info.assert_any_call(f"RoutingEngine initialized with config: {self.no_fallback_config}")
 
+    # --- Tests for Execution Plan Logic ---
+    def test_select_agents_uses_valid_execution_plan(self):
+        analysis = {"execution_plan": ["AgentA", "AgentC"], "query_type": "plan_type"}
+        # Using engine_fb_disabled to ensure fallback isn't a factor if plan logic fails
+        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
 
-    def test_select_agents_uses_analyzers_suggestions(self):
-        analysis = {"suggested_agents": ["AgentB"], "query_type": "specific_type"}
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0], self.mock_agent_a) # Order matters
+        self.assertEqual(selected[1], self.mock_agent_c)
+        self.mock_logger_instance.info.assert_any_call(
+            f"Execution plan is valid. Selected 2 agent(s) in planned order: {['AgentA', 'AgentC']}"
+        )
+
+    def test_select_agents_invalid_agent_in_execution_plan_returns_empty(self):
+        analysis = {"execution_plan": ["AgentA", "AgentX"], "query_type": "plan_type_fail"} # AgentX not available
+        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
+
+        self.assertEqual(len(selected), 0)
+        self.mock_logger_instance.warning.assert_any_call(
+            "Agent 'AgentX' from execution_plan not found in available_agents. Plan is invalid."
+        )
+        self.mock_logger_instance.warning.assert_any_call(
+            "Execution plan was invalid (agent not found). Returning no agents."
+        )
+
+    def test_select_agents_empty_execution_plan_uses_suggestion_logic(self):
+        analysis = {"execution_plan": [], "suggested_agents": ["AgentB"], "query_type": "empty_plan_type"}
+        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents) # Fallback disabled
+
+        self.assertEqual(len(selected), 1)
+        self.assertIn(self.mock_agent_b, selected)
+        self.mock_logger_instance.info.assert_any_call(
+            "No valid execution plan. Processing suggested_agents: ['AgentB']."
+        )
+        self.mock_logger_instance.info.assert_any_call(
+            f"Routing engine finalized selection (suggestion-based). Selected 1 agent(s): {['AgentB']}"
+        )
+
+    def test_select_agents_no_execution_plan_key_uses_suggestion_logic(self):
+        analysis = {"suggested_agents": ["AgentC"], "query_type": "no_plan_key_type"} # No 'execution_plan' key
+        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents) # Fallback disabled
+
+        self.assertEqual(len(selected), 1)
+        self.assertIn(self.mock_agent_c, selected)
+        self.mock_logger_instance.info.assert_any_call(
+            "No valid execution plan. Processing suggested_agents: ['AgentC']."
+        )
+
+    # --- Tests for Suggestion-Based Logic (execution_plan is None or empty) ---
+    def test_select_agents_uses_analyzers_suggestions_if_no_plan(self):
+        analysis = {"suggested_agents": ["AgentB"], "execution_plan": None, "query_type": "specific_type"}
         selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
 
         self.assertEqual(len(selected), 1)
         self.assertIn(self.mock_agent_b, selected)
         self.mock_logger_instance.info.assert_any_call(
-            f"Routing engine finalized selection. Selected 1 agent(s): {['AgentB']}"
+            f"Routing engine finalized selection (suggestion-based). Selected 1 agent(s): {['AgentB']}"
         )
-        # Ensure fallback was not logged as being used
         log_calls_str = " ".join([str(call_args) for call_args, _ in self.mock_logger_instance.info.call_args_list])
         self.assertNotIn("Fallback enabled: Selected first available agent", log_calls_str)
 
 
-    def test_select_agents_analyzers_suggestions_unavailable_triggers_fallback_when_enabled(self):
-        analysis = {"suggested_agents": ["AgentX"], "query_type": "type_x"} # AgentX not available
-        selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
-
-        self.assertEqual(len(selected), 1)
-        self.assertIn(selected[0], self.available_agents.values()) # Should be AgentA (first)
-        self.assertEqual(selected[0].get_name(), "AgentA")
-        self.mock_logger_instance.warning.assert_any_call(
-            "TaskAnalyzer suggested agent 'AgentX', but it was not found in available agents. Skipping."
-        )
-        self.mock_logger_instance.info.assert_any_call(
-            "No agents selected based on TaskAnalyzer's direct suggestions (or suggestions were empty/invalid). Considering fallback options."
-        )
-        self.mock_logger_instance.info.assert_any_call(
-            f"Fallback enabled: Selected first available agent: 'AgentA'."
-        )
-
-    def test_select_agents_analyzers_suggestions_unavailable_no_fallback_when_disabled(self):
-        self.mock_logger_instance.reset_mock() # Reset for engine_fb_disabled instance logging
-        analysis = {"suggested_agents": ["AgentX"], "query_type": "type_x"}
-        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
-
-        self.assertEqual(len(selected), 0)
-        self.mock_logger_instance.warning.assert_any_call(
-            "TaskAnalyzer suggested agent 'AgentX', but it was not found in available agents. Skipping."
-        )
-        self.mock_logger_instance.info.assert_any_call(
-             "No agents selected based on TaskAnalyzer's direct suggestions (or suggestions were empty/invalid). Considering fallback options."
-        )
-        self.mock_logger_instance.info.assert_any_call("Fallback to first available agent is disabled by configuration.")
-        self.mock_logger_instance.error.assert_any_call(
-            "Routing engine could not select any agent. No suggestions were processed successfully, and fallback (if any) yielded no agent."
-        )
-
-
-    def test_select_agents_analyzer_returns_empty_suggestions_triggers_fallback_when_enabled(self):
-        analysis = {"suggested_agents": [], "query_type": "unknown_type"}
+    def test_select_agents_analyzers_suggestions_unavailable_triggers_fallback_when_enabled_if_no_plan(self):
+        analysis = {"suggested_agents": ["AgentX"], "execution_plan": None, "query_type": "type_x"}
         selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
 
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].get_name(), "AgentA") # Fallback to first
-        self.mock_logger_instance.info.assert_any_call("TaskAnalyzer provided no specific agent suggestions.")
+        self.mock_logger_instance.warning.assert_any_call(
+            "TaskAnalyzer suggested agent 'AgentX', but it was not found in available agents. Skipping."
+        )
         self.mock_logger_instance.info.assert_any_call(
             "No agents selected based on TaskAnalyzer's direct suggestions (or suggestions were empty/invalid). Considering fallback options."
         )
@@ -129,36 +135,57 @@ class TestRoutingEngine(unittest.TestCase):
             f"Fallback enabled: Selected first available agent: 'AgentA'."
         )
 
-    def test_select_agents_analyzer_returns_empty_suggestions_no_fallback_when_disabled(self):
+    def test_select_agents_analyzers_suggestions_unavailable_no_fallback_when_disabled_if_no_plan(self):
         self.mock_logger_instance.reset_mock()
-        analysis = {"suggested_agents": [], "query_type": "unknown_type"}
+        analysis = {"suggested_agents": ["AgentX"], "execution_plan": None, "query_type": "type_x"}
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
 
         self.assertEqual(len(selected), 0)
-        self.mock_logger_instance.info.assert_any_call("TaskAnalyzer provided no specific agent suggestions.")
-        self.mock_logger_instance.info.assert_any_call(
-            "No agents selected based on TaskAnalyzer's direct suggestions (or suggestions were empty/invalid). Considering fallback options."
-        )
-        self.mock_logger_instance.info.assert_any_call("Fallback to first available agent is disabled by configuration.")
         self.mock_logger_instance.error.assert_any_call(
-             "Routing engine could not select any agent. No suggestions were processed successfully, and fallback (if any) yielded no agent."
+            "Routing engine could not select any agent. No plan, no valid suggestions, and fallback (if any) yielded no agent."
         )
 
-    def test_select_agents_no_agents_available_in_system(self):
-        analysis = {"suggested_agents": ["AgentA"], "query_type": "test_type"}
-        selected = self.engine_fb_enabled.select_agents(analysis, {}) # No agents available
-
-        self.assertEqual(len(selected), 0)
-        self.mock_logger_instance.warning.assert_any_call("No agents available for routing. Returning empty list.")
-
-    def test_select_agents_missing_suggestion_key_uses_fallback_when_enabled(self):
-        # If 'suggested_agents' key is missing, it defaults to [], triggering fallback
-        analysis_key_missing = {"some_other_key": "value", "query_type": "missing_key_analysis"}
-        selected = self.engine_fb_enabled.select_agents(analysis_key_missing, self.available_agents)
+    def test_select_agents_analyzer_returns_empty_suggestions_triggers_fallback_when_enabled_if_no_plan(self):
+        analysis = {"suggested_agents": [], "execution_plan": None, "query_type": "unknown_type"}
+        selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
 
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].get_name(), "AgentA")
-        self.mock_logger_instance.info.assert_any_call("TaskAnalyzer provided no specific agent suggestions.")
+        self.mock_logger_instance.info.assert_any_call(
+            f"Fallback enabled: Selected first available agent: 'AgentA'."
+        )
+
+    def test_select_agents_analyzer_returns_empty_suggestions_no_fallback_when_disabled_if_no_plan(self):
+        self.mock_logger_instance.reset_mock()
+        analysis = {"suggested_agents": [], "execution_plan": None, "query_type": "unknown_type"}
+        selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
+
+        self.assertEqual(len(selected), 0)
+        self.mock_logger_instance.error.assert_any_call(
+             "Routing engine could not select any agent. No plan, no valid suggestions, and fallback (if any) yielded no agent."
+        )
+
+    def test_select_agents_no_agents_available_in_system(self):
+        # This test is general, applies whether plan or suggestion logic is hit first
+        analysis_with_plan = {"execution_plan": ["AgentA"], "query_type": "test_type"}
+        selected_plan = self.engine_fb_enabled.select_agents(analysis_with_plan, {})
+        self.assertEqual(len(selected_plan), 0)
+        self.mock_logger_instance.warning.assert_any_call("No agents available for routing. Returning empty list.")
+        self.mock_logger_instance.reset_mock()
+
+        analysis_with_sugg = {"suggested_agents": ["AgentA"], "query_type": "test_type"}
+        selected_sugg = self.engine_fb_enabled.select_agents(analysis_with_sugg, {})
+        self.assertEqual(len(selected_sugg), 0)
+        self.mock_logger_instance.warning.assert_any_call("No agents available for routing. Returning empty list.")
+
+
+    def test_select_agents_missing_suggestion_and_plan_keys_uses_fallback_when_enabled(self):
+        analysis_missing_keys = {"query_type": "missing_all_guidance"}
+        selected = self.engine_fb_enabled.select_agents(analysis_missing_keys, self.available_agents)
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].get_name(), "AgentA")
+        self.mock_logger_instance.info.assert_any_call("TaskAnalyzer provided no specific agent suggestions (and no execution plan).")
         self.mock_logger_instance.info.assert_any_call(
             f"Fallback enabled: Selected first available agent: 'AgentA'."
         )

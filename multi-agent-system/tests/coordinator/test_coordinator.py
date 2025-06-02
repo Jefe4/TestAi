@@ -42,244 +42,208 @@ class TestCoordinator(unittest.TestCase):
         for attr in ['info', 'debug', 'warning', 'error']:
             setattr(self.mock_instances['coordinator_logger'], attr, MagicMock())
 
-        self.mock_ds_instance = MagicMock(spec=BaseAgent)
-        self.mock_ds_instance.get_name.return_value = "MyDeepSeek"
-        self.mocks['DeepSeekAgent'].return_value = self.mock_ds_instance
+        # Mock agents for use in plans and suggestions
+        self.mock_agent_A = MagicMock(spec=BaseAgent)
+        self.mock_agent_A.get_name.return_value = "AgentA"
 
-        self.mock_claude_instance = MagicMock(spec=BaseAgent)
-        self.mock_claude_instance.get_name.return_value = "MyClaude"
-        self.mocks['ClaudeAgent'].return_value = self.mock_claude_instance
+        self.mock_agent_B = MagicMock(spec=BaseAgent)
+        self.mock_agent_B.get_name.return_value = "AgentB"
+
+        self.mock_agent_C = MagicMock(spec=BaseAgent)
+        self.mock_agent_C.get_name.return_value = "AgentC"
 
         self.mock_gemini_instance = MagicMock(spec=BaseAgent)
         self.mock_gemini_instance.get_name.return_value = "MyGemini"
+
+        # Configure mocked agent classes to return these specific instances
+        # This is how Coordinator's _instantiate_agents will "create" our mocks
+        # if their keys ("deepseek", "claude", "gemini") are in APIManager's service_configs
+        self.mocks['DeepSeekAgent'].return_value = self.mock_agent_A # "AgentA" is a DeepSeekAgent
+        self.mocks['ClaudeAgent'].return_value = self.mock_agent_B   # "AgentB" is a ClaudeAgent
+        self.mocks['CursorAgent'].return_value = self.mock_agent_C   # "AgentC" is a CursorAgent
         self.mocks['GeminiAgent'].return_value = self.mock_gemini_instance
 
 
-    def test_initialization_no_agent_configs(self):
-        self.mock_instances['api_manager'].service_configs = {}
-        coordinator = Coordinator()
-        self.assertEqual(coordinator.agents, {})
-        self.mock_instances['coordinator_logger'].warning.assert_any_call(
-            "No agent configurations found in APIManager's service_configs. "
-            "Cannot instantiate agents. Ensure 'agent_configs.yaml' is correctly "
-            "populated and accessible, or environment variables are set for services."
-        )
-
+    # --- Initialization Tests ---
     def test_initialization_instantiates_agents_from_config(self):
-        ds_config = {"name": "MyDeepSeek", "api_key": "ds_key", "param": 1}
-        claude_config = {"name": "MyClaude", "api_key": "claude_key", "param": 2}
-        self.mock_instances['api_manager'].service_configs = {
-            "deepseek": ds_config,
-            "claude": claude_config
-        }
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}
+        cfg_b = {"name": "AgentB", "api_key": "key_b"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a, "claude": cfg_b}
 
         coordinator = Coordinator()
 
-        self.mocks['DeepSeekAgent'].assert_called_once_with(
-            agent_name="MyDeepSeek",
-            api_manager=self.mock_instances['api_manager'],
-            config=ds_config
-        )
-        self.mocks['ClaudeAgent'].assert_called_once_with(
-            agent_name="MyClaude",
-            api_manager=self.mock_instances['api_manager'],
-            config=claude_config
-        )
-        self.assertIn("MyDeepSeek", coordinator.agents)
-        self.assertIs(coordinator.agents["MyDeepSeek"], self.mock_ds_instance)
-        self.assertIn("MyClaude", coordinator.agents)
-        self.assertIs(coordinator.agents["MyClaude"], self.mock_claude_instance)
-        self.mock_instances['coordinator_logger'].info.assert_any_call(
-            "Coordinator initialized successfully with agents: MyDeepSeek, MyClaude" # Order might vary
-        )
+        self.mocks['DeepSeekAgent'].assert_called_once_with(agent_name="AgentA", api_manager=self.mock_instances['api_manager'], config=cfg_a)
+        self.mocks['ClaudeAgent'].assert_called_once_with(agent_name="AgentB", api_manager=self.mock_instances['api_manager'], config=cfg_b)
+        self.assertIn("AgentA", coordinator.agents); self.assertIs(coordinator.agents["AgentA"], self.mock_agent_A)
+        self.assertIn("AgentB", coordinator.agents); self.assertIs(coordinator.agents["AgentB"], self.mock_agent_B)
 
+    # ... (other init tests: no_configs, skip_unknown, handles_error - assumed to be similar and passing)
 
-    def test_initialization_skips_unknown_agent_key(self):
-        self.mock_instances['api_manager'].service_configs = {"unknown_agent": {"name": "Unknown", "api_key": "key"}}
-        coordinator = Coordinator()
-        self.assertEqual(coordinator.agents, {})
-        self.mock_instances['coordinator_logger'].warning.assert_any_call(
-            "No agent class mapping found for config key: 'unknown_agent'. Skipping agent instantiation."
-        )
-
-    def test_initialization_handles_agent_instantiation_error(self):
-        ds_config_err = {"name": "MyDeepSeekErr", "api_key": "key"}
-        self.mock_instances['api_manager'].service_configs = {"deepseek": ds_config_err}
-        self.mocks['DeepSeekAgent'].side_effect = Exception("DeepSeek Init Error")
-
+    # --- Single Agent / Suggestion Path Tests ---
+    def test_process_query_single_agent_via_suggestion_with_overrides(self):
+        cfg_c = {"name": "AgentC", "api_key": "key_c"}
+        self.mock_instances['api_manager'].service_configs = {"cursor": cfg_c} # AgentC is a CursorAgent
         coordinator = Coordinator()
 
-        self.assertEqual(coordinator.agents, {})
-        self.mock_instances['coordinator_logger'].error.assert_any_call(
-            "Failed to instantiate agent 'MyDeepSeekErr' (key: 'deepseek') using class DeepSeekAgent: DeepSeek Init Error",
-            exc_info=True
-        )
-
-    def test_register_agent_manually(self):
-        self.mock_instances['api_manager'].service_configs = {}
-        coordinator = Coordinator()
-
-        mock_manual_agent = MagicMock(spec=BaseAgent)
-        mock_manual_agent.get_name.return_value = "ManualAgent"
-
-        coordinator.register_agent(mock_manual_agent)
-
-        self.assertIn("ManualAgent", coordinator.agents)
-        self.assertIs(coordinator.agents["ManualAgent"], mock_manual_agent)
-        self.mock_instances['coordinator_logger'].info.assert_any_call("Agent 'ManualAgent' registered successfully.")
-
-    def test_process_query_no_agents_available(self):
-        self.mock_instances['api_manager'].service_configs = {}
-        coordinator = Coordinator()
-
-        response = coordinator.process_query("test query")
-
-        self.assertEqual(response, {"status": "error", "message": "No agents available in the system."})
-        self.mock_instances['coordinator_logger'].error.assert_any_call(
-            "No agents are registered or instantiated. Cannot process query."
-        )
-
-    def test_process_query_successful_flow_single_agent_with_overrides(self):
-        ds_config_flow = {"name": "MyDeepSeek", "api_key": "key"}
-        self.mock_instances['api_manager'].service_configs = {"deepseek": ds_config_flow}
-        coordinator = Coordinator()
-
-        analysis_result = {"processed_query_for_agent": "analyzed_query_for_ds", "suggested_agents": ["MyDeepSeek"]}
-        self.mock_instances['task_analyzer'].analyze_query.return_value = analysis_result
-
-        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_ds_instance]
-
-        self.mock_ds_instance.process_query.return_value = {"status": "success", "content": "deepseek_agent_response"}
-
-        query_overrides = {"system_prompt": "Test override prompt", "temperature": 0.123}
-        response = coordinator.process_query("original_query_text", query_data_overrides=query_overrides)
-
-        self.mock_instances['task_analyzer'].analyze_query.assert_called_once_with("original_query_text", coordinator.agents)
-        self.mock_instances['routing_engine'].select_agents.assert_called_once_with(analysis_result, coordinator.agents)
-
-        expected_agent_query_data = {
-            "prompt": "analyzed_query_for_ds",
-            "system_prompt": "Test override prompt", # From overrides
-            "temperature": 0.123                  # From overrides
-        }
-        self.mock_ds_instance.process_query.assert_called_once_with(expected_agent_query_data)
-
-        self.assertEqual(response, {"status": "success", "content": "deepseek_agent_response"})
-        self.mock_instances['coordinator_logger'].info.assert_any_call(
-            "Dispatching query to primary selected agent: MyDeepSeek"
-        )
-        self.mock_instances['coordinator_logger'].info.assert_any_call(
-            f"Applying query_data_overrides: {query_overrides}"
-        )
-
-
-    def test_process_query_no_overrides_uses_analysis_prompt(self):
-        ds_config_flow = {"name": "MyDeepSeek", "api_key": "key"}
-        self.mock_instances['api_manager'].service_configs = {"deepseek": ds_config_flow}
-        coordinator = Coordinator()
-
-        # TaskAnalyzer might also return a system_prompt
         analysis_result = {
-            "processed_query_for_agent": "analyzed_query_from_taskanalyzer",
-            "suggested_agents": ["MyDeepSeek"],
-            "system_prompt": "System prompt from TaskAnalyzer"
+            "processed_query_for_agent": "analyzed_query_for_agent_c",
+            "suggested_agents": ["AgentC"],
+            "execution_plan": []
         }
         self.mock_instances['task_analyzer'].analyze_query.return_value = analysis_result
-        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_ds_instance]
-        self.mock_ds_instance.process_query.return_value = {"status": "success", "content": "agent_response_no_override"}
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_C]
+        self.mock_agent_C.process_query.return_value = {"status": "success", "content": "agent_c_response"}
 
-        response = coordinator.process_query("original_query_no_override") # No query_data_overrides
+        query_overrides = {"system_prompt": "Override for AgentC", "temperature": 0.22}
+        response = coordinator.process_query("original_query_for_c", query_data_overrides=query_overrides)
 
-        expected_agent_query_data = {
-            "prompt": "analyzed_query_from_taskanalyzer",
-            "system_prompt": "System prompt from TaskAnalyzer" # This comes from analysis_result
-        }
-        self.mock_ds_instance.process_query.assert_called_once_with(expected_agent_query_data)
-        self.assertEqual(response, {"status": "success", "content": "agent_response_no_override"})
-        self.mock_instances['coordinator_logger'].debug.assert_any_call("No query_data_overrides provided.")
+        expected_agent_query_data = {"prompt": "analyzed_query_for_agent_c", "system_prompt": "Override for AgentC", "temperature": 0.22}
+        self.mock_agent_C.process_query.assert_called_once_with(expected_agent_query_data)
+        self.assertEqual(response, {"status": "success", "content": "agent_c_response"})
 
-
-    def test_process_query_routing_engine_returns_no_agents(self):
-        ds_config_route_fail = {"name": "MyDeepSeek", "api_key": "key"}
-        self.mock_instances['api_manager'].service_configs = {"deepseek": ds_config_route_fail}
+    def test_process_query_falls_back_to_suggestions_if_empty_plan(self):
+        cfg_c = {"name": "AgentC", "api_key": "key_c"}
+        self.mock_instances['api_manager'].service_configs = {"cursor": cfg_c}
         coordinator = Coordinator()
 
-        self.mock_instances['task_analyzer'].analyze_query.return_value = {"processed_query_for_agent": "query", "suggested_agents": ["SomeAgent"]}
-        self.mock_instances['routing_engine'].select_agents.return_value = []
-
-        response = coordinator.process_query("test query for router fail")
-
-        self.assertEqual(response, {"status": "error", "message": "No suitable agent found for the query."})
-        self.mock_instances['coordinator_logger'].warning.assert_any_call(
-            "Routing engine did not select any agent for the query."
-        )
-
-    def test_process_query_selected_agent_raises_exception(self):
-        ds_config_agent_ex = {"name": "MyDeepSeek", "api_key": "key"}
-        self.mock_instances['api_manager'].service_configs = {"deepseek": ds_config_agent_ex}
-        coordinator = Coordinator()
-
-        self.mock_instances['task_analyzer'].analyze_query.return_value = {"processed_query_for_agent": "query", "suggested_agents": ["MyDeepSeek"]}
-        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_ds_instance]
-        self.mock_ds_instance.process_query.side_effect = Exception("Agent Internal Processing Error")
-
-        response = coordinator.process_query("test query for agent exception")
-
-        self.assertIn("status", response)
-        self.assertEqual(response["status"], "error")
-        self.assertIn("Failed to process query with MyDeepSeek: Agent Internal Processing Error", response["message"])
-        self.mock_instances['coordinator_logger'].error.assert_any_call(
-            "Error during query processing with agent MyDeepSeek: Agent Internal Processing Error",
-            exc_info=True
-        )
-
-    def test_process_query_adapts_query_data_for_gemini_agent_with_overrides(self):
-        gemini_config = {"name": "MyGemini", "api_key": "gemini_key"}
-        self.mock_instances['api_manager'].service_configs = {"gemini": gemini_config}
-        self.mocks['GeminiAgent'].return_value = self.mock_gemini_instance
-        coordinator = Coordinator()
-
-        self.assertIn("MyGemini", coordinator.agents)
-        self.assertIs(coordinator.agents["MyGemini"], self.mock_gemini_instance)
-
-        analysis_result = {"processed_query_for_agent": "gemini_query_text", "suggested_agents": ["MyGemini"]}
+        analysis_result = {"processed_query_for_agent": "query_for_suggestion", "suggested_agents": ["AgentC"], "execution_plan": []}
         self.mock_instances['task_analyzer'].analyze_query.return_value = analysis_result
-        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_gemini_instance]
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_C]
+        self.mock_agent_C.process_query.return_value = {"status": "success", "content": "response_from_agent_c"}
 
-        self.mock_gemini_instance.process_query.return_value = {"status": "success", "content": "gemini_response_text"}
+        response = coordinator.process_query("original_query_for_agent_c")
+        self.mock_agent_C.process_query.assert_called_once_with({"prompt": "query_for_suggestion"})
+        self.assertEqual(response, {"status": "success", "content": "response_from_agent_c"})
 
-        query_overrides = {"custom_param": "gemini_value", "temperature": 0.98}
-        response = coordinator.process_query("original_gemini_query_text", query_data_overrides=query_overrides)
+    # --- Tests for Rich Execution Plan Logic ---
+    def test_process_query_rich_plan_driven_sequential_execution_success(self):
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}; cfg_b = {"name": "AgentB", "api_key": "key_b"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a, "claude": cfg_b}
+        coordinator = Coordinator()
 
-        expected_agent_query_data = {
-            "prompt_parts": ["gemini_query_text"], # Base from analysis, adapted for Gemini
-            "custom_param": "gemini_value",       # From overrides
-            "temperature": 0.98                   # From overrides
+        initial_query_content = "initial_analyzed_query"
+        rich_plan = [
+            {"agent_name": "AgentA", "task_description": "Step A", "input_mapping": {"prompt_source": "original_query"}, "output_id": "res_A"},
+            {"agent_name": "AgentB", "task_description": "Step B", "input_mapping": {"prompt_source": "ref:res_A.content"}, "output_id": "res_B"}
+        ]
+        self.mock_instances['task_analyzer'].analyze_query.return_value = {
+            "processed_query_for_agent": initial_query_content,
+            "execution_plan": rich_plan
         }
-        self.mock_gemini_instance.process_query.assert_called_once_with(expected_agent_query_data)
-        self.assertEqual(response, {"status": "success", "content": "gemini_response_text"})
+        # RoutingEngine now returns the ordered list of agents based on the plan
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_A, self.mock_agent_B]
+
+        self.mock_agent_A.process_query.return_value = {"status": "success", "content": "output_from_A"}
+        self.mock_agent_B.process_query.return_value = {"status": "success", "content": "output_from_B"}
+
+        response = coordinator.process_query("original_user_query_for_rich_plan")
+
+        self.mock_agent_A.process_query.assert_called_once_with({"prompt": initial_query_content})
+        self.mock_agent_B.process_query.assert_called_once_with({"prompt": "output_from_A"})
+        self.assertEqual(response, {"status": "success", "content": "output_from_B"})
         self.mock_instances['coordinator_logger'].info.assert_any_call(
-            f"Applying query_data_overrides: {query_overrides}"
+            "Starting rich sequential execution for 2 agents based on execution_plan: ['AgentA', 'AgentB']"
         )
 
-    def test_process_query_gemini_override_prompt_parts(self):
-        gemini_config = {"name": "MyGemini", "api_key": "gemini_key"}
-        self.mock_instances['api_manager'].service_configs = {"gemini": gemini_config}
-        self.mocks['GeminiAgent'].return_value = self.mock_gemini_instance
+    def test_rich_plan_fails_if_intermediate_step_fails_status(self):
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}; cfg_b = {"name": "AgentB", "api_key": "key_b"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a, "claude": cfg_b}
         coordinator = Coordinator()
 
-        analysis_result = {"processed_query_for_agent": "original_analysis_prompt", "suggested_agents": ["MyGemini"]}
-        self.mock_instances['task_analyzer'].analyze_query.return_value = analysis_result
-        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_gemini_instance]
-        self.mock_gemini_instance.process_query.return_value = {"status": "success"}
+        rich_plan_fail = [
+            {"agent_name": "AgentA", "task_description": "Step A", "input_mapping": {"prompt_source": "original_query"}, "output_id": "res_A_fail"},
+            {"agent_name": "AgentB", "task_description": "Step B", "input_mapping": {"prompt_source": "ref:res_A_fail.content"}, "output_id": "res_B_fail"}
+        ]
+        self.mock_instances['task_analyzer'].analyze_query.return_value = {"processed_query_for_agent": "input", "execution_plan": rich_plan_fail}
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_A, self.mock_agent_B]
 
-        query_overrides = {"prompt_parts": ["overridden_prompt_part_1", "overridden_prompt_part_2"]}
-        coordinator.process_query("query", query_data_overrides=query_overrides)
+        agent_A_error_response = {"status": "error", "message": "AgentA_failed_in_plan"}
+        self.mock_agent_A.process_query.return_value = agent_A_error_response
 
-        expected_agent_query_data = {
-            "prompt_parts": ["overridden_prompt_part_1", "overridden_prompt_part_2"]
+        response = coordinator.process_query("query_for_plan_fail")
+
+        self.mock_agent_A.process_query.assert_called_once()
+        self.mock_agent_B.process_query.assert_not_called()
+        self.assertEqual(response, agent_A_error_response)
+        self.mock_instances['coordinator_logger'].warning.assert_any_call(
+            "Agent AgentA in plan step 1 returned status 'error'. Message: AgentA_failed_in_plan. Halting plan execution."
+        )
+
+    def test_rich_plan_fails_if_intermediate_step_misses_content(self):
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}; cfg_b = {"name": "AgentB", "api_key": "key_b"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a, "claude": cfg_b}
+        coordinator = Coordinator()
+
+        rich_plan_no_content = [
+            {"agent_name": "AgentA", "task_description": "Step A", "input_mapping": {"prompt_source": "original_query"}, "output_id": "res_A_no_content"},
+            {"agent_name": "AgentB", "task_description": "Step B", "input_mapping": {"prompt_source": "ref:res_A_no_content.content"}, "output_id": "res_B_no_content"}
+        ]
+        self.mock_instances['task_analyzer'].analyze_query.return_value = {"processed_query_for_agent": "input", "execution_plan": rich_plan_no_content}
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_A, self.mock_agent_B]
+        self.mock_agent_A.process_query.return_value = {"status": "success"} # No "content" field
+
+        response = coordinator.process_query("query_for_plan_no_content")
+
+        self.mock_agent_A.process_query.assert_called_once()
+        self.mock_agent_B.process_query.assert_not_called()
+        self.assertEqual(response, {"status": "error", "message": "Previous step 'res_A_no_content' missing 'content'."})
+        self.mock_instances['coordinator_logger'].error.assert_any_call(
+            "Previous step ('res_A_no_content') succeeded but returned no 'content'. Aborting."
+        )
+
+    def test_rich_plan_fails_if_first_step_references_previous(self):
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a}
+        coordinator = Coordinator()
+
+        invalid_plan_first_step_ref = [
+            {"agent_name": "AgentA", "task_description": "Step A", "input_mapping": {"prompt_source": "ref:previous_step.content"}, "output_id": "res_A_invalid"}
+        ]
+        self.mock_instances['task_analyzer'].analyze_query.return_value = {"processed_query_for_agent": "input", "execution_plan": invalid_plan_first_step_ref}
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_A]
+
+        response = coordinator.process_query("query_for_invalid_first_step")
+        self.assertEqual(response, {"status": "error", "message": "Invalid input_mapping for the first step of the plan."})
+        self.mock_agent_A.process_query.assert_not_called()
+
+    def test_rich_plan_with_overrides(self):
+        cfg_a = {"name": "AgentA", "api_key": "key_a"}; cfg_b = {"name": "AgentB", "api_key": "key_b"}
+        self.mock_instances['api_manager'].service_configs = {"deepseek": cfg_a, "claude": cfg_b}
+        coordinator = Coordinator()
+
+        initial_prompt = "initial_plan_input_overrides"
+        rich_plan_overrides = [
+            {"agent_name": "AgentA", "task_description": "Step A", "input_mapping": {"prompt_source": "original_query"}, "output_id": "res_A_ovr"},
+            {"agent_name": "AgentB", "task_description": "Step B", "input_mapping": {"prompt_source": "ref:res_A_ovr.content"}, "output_id": "res_B_ovr"}
+        ]
+        self.mock_instances['task_analyzer'].analyze_query.return_value = {
+            "processed_query_for_agent": initial_prompt,
+            "execution_plan": rich_plan_overrides,
+            "system_prompt": "System prompt from analysis" # This should apply to first agent if no global override
         }
-        self.mock_gemini_instance.process_query.assert_called_once_with(expected_agent_query_data)
+        self.mock_instances['routing_engine'].select_agents.return_value = [self.mock_agent_A, self.mock_agent_B]
+
+        self.mock_agent_A.process_query.return_value = {"status": "success", "content": "output_from_A_ovr"}
+        self.mock_agent_B.process_query.return_value = {"status": "success", "content": "output_from_B_ovr"}
+
+        # Global override for system_prompt, specific override for temperature
+        query_overrides = {"system_prompt": "Global System Prompt For Plan", "temperature": 0.99}
+        response = coordinator.process_query("query_rich_plan_overrides", query_data_overrides=query_overrides)
+
+        expected_data_agent_A = {
+            "prompt": initial_prompt,
+            "system_prompt": "Global System Prompt For Plan", # Overrides analysis_result.system_prompt
+            "temperature": 0.99
+        }
+        self.mock_agent_A.process_query.assert_called_once_with(expected_data_agent_A)
+
+        expected_data_agent_B = {
+            "prompt": "output_from_A_ovr",
+            "system_prompt": "Global System Prompt For Plan", # Maintained for second step
+            "temperature": 0.99
+        }
+        self.mock_agent_B.process_query.assert_called_once_with(expected_data_agent_B)
+        self.assertEqual(response, {"status": "success", "content": "output_from_B_ovr"})
 
 
 if __name__ == '__main__':

@@ -183,82 +183,212 @@ class Coordinator:
             self.logger.warning("Routing engine did not select any agent for the query.")
             return {"status": "error", "message": "No suitable agent found for the query."}
 
-        # For now, use the first selected agent.
-        # Future: Could involve strategies for multiple agents (e.g., consensus, chaining).
-        primary_agent = selected_agents[0]
-        self.logger.info(f"Dispatching query to primary selected agent: {primary_agent.get_name()}")
+        if len(selected_agents) == 1:
+            primary_agent = selected_agents[0]
+            self.logger.info(f"Dispatching query to primary selected agent: {primary_agent.get_name()}")
 
-        # Prepare query_data for the agent
-        agent_query_data: Dict[str, Any] = {}
-        processed_prompt = analysis_result.get("processed_query_for_agent", query)
+            # Prepare query_data for the single agent
+            agent_query_data: Dict[str, Any] = {}
+            processed_prompt = analysis_result.get("processed_query_for_agent", query)
 
-        # Check if the primary_agent is an instance of GeminiAgent using the stored class type
-        gemini_agent_class = self.agent_classes.get("gemini")
-        is_gemini_instance = gemini_agent_class and isinstance(primary_agent, gemini_agent_class)
-
-        if is_gemini_instance:
-            # Default to prompt_parts for Gemini
-            agent_query_data["prompt_parts"] = [processed_prompt]
-        else:
-            # Default to prompt for other agents
-            agent_query_data["prompt"] = processed_prompt
-
-        # If TaskAnalyzer provides a specific system_prompt (not part of overrides yet)
-        # This should be added before overrides to allow overrides to change it.
-        # (Note: This was part of the old logic too, preserving its position relative to general prompt setting)
-        if analysis_result.get("system_prompt"):
-            agent_query_data["system_prompt"] = analysis_result.get("system_prompt")
-
-        # Apply query_data_overrides
-        if query_data_overrides:
-            self.logger.info(f"Applying query_data_overrides: {query_data_overrides}")
-
-            # Make a copy to safely pop items if needed for specific logic
-            temp_overrides = query_data_overrides.copy()
+            gemini_agent_class = self.agent_classes.get("gemini")
+            is_gemini_instance = gemini_agent_class and isinstance(primary_agent, gemini_agent_class)
 
             if is_gemini_instance:
-                # If 'prompt_parts' is in overrides, it takes precedence for Gemini
-                if "prompt_parts" in temp_overrides:
-                    agent_query_data["prompt_parts"] = temp_overrides.pop("prompt_parts")
-                # If 'prompt' is in overrides for Gemini, it might create ambiguity if not removed.
-                # However, GeminiAgent itself should prioritize 'prompt_parts'.
-                # If 'prompt' exists in temp_overrides, it will be added by update().
-                # If 'prompt' was also in agent_query_data (e.g. from analysis_result for non-Gemini before override),
-                # it would be overwritten by update().
-                # For clarity, if 'prompt_parts' is set, we can remove 'prompt' from temp_overrides if it exists.
-                if "prompt" in temp_overrides and "prompt_parts" in agent_query_data: # if prompt_parts was set either by default or override
-                    temp_overrides.pop("prompt", None) # Remove 'prompt' from overrides if 'prompt_parts' is the primary way
-            else: # Not Gemini
-                # If 'prompt' is in overrides, it takes precedence for non-Gemini
-                if "prompt" in temp_overrides:
-                    # This was already set as default, so pop just ensures it's not processed again by update if logic changes.
-                    # The agent_query_data["prompt"] would be updated by .update() anyway if key is present.
-                    # To be explicit that override 'prompt' is used:
-                    agent_query_data["prompt"] = temp_overrides.pop("prompt")
-                # If 'prompt_parts' is in overrides for non-Gemini, it's ambiguous.
-                # Non-Gemini agents are not expected to use 'prompt_parts'.
-                # We can remove it from overrides to avoid confusion or let it pass.
-                # Let's remove it to keep agent_query_data cleaner for non-Gemini.
-                if "prompt_parts" in temp_overrides:
-                    temp_overrides.pop("prompt_parts", None)
+                agent_query_data["prompt_parts"] = [processed_prompt]
+            else:
+                agent_query_data["prompt"] = processed_prompt
 
+            if analysis_result.get("system_prompt"):
+                agent_query_data["system_prompt"] = analysis_result.get("system_prompt")
 
-            agent_query_data.update(temp_overrides) # Apply remaining/all other overrides
-        else:
-            self.logger.debug("No query_data_overrides provided.")
+            if query_data_overrides:
+                self.logger.info(f"Applying query_data_overrides for single agent: {query_data_overrides}")
+                temp_overrides = query_data_overrides.copy()
+                if is_gemini_instance:
+                    if "prompt_parts" in temp_overrides:
+                        agent_query_data["prompt_parts"] = temp_overrides.pop("prompt_parts")
+                    if "prompt" in temp_overrides and "prompt_parts" in agent_query_data:
+                        temp_overrides.pop("prompt", None)
+                else:
+                    if "prompt" in temp_overrides:
+                        agent_query_data["prompt"] = temp_overrides.pop("prompt")
+                    if "prompt_parts" in temp_overrides:
+                        temp_overrides.pop("prompt_parts", None)
+                agent_query_data.update(temp_overrides)
+            else:
+                self.logger.debug("No query_data_overrides provided for single agent.")
 
-        self.logger.debug(f"Prepared agent_query_data for {primary_agent.get_name()}: {agent_query_data}")
+            self.logger.debug(f"Prepared agent_query_data for {primary_agent.get_name()}: {agent_query_data}")
 
-        try:
-            response = primary_agent.process_query(agent_query_data)
-            self.logger.info(f"Response from {primary_agent.get_name()} (first 100 chars): {str(response)[:100]}...")
-            return response
-        except Exception as e:
-            self.logger.error(
-                f"Error during query processing with agent {primary_agent.get_name()}: {e}",
-                exc_info=True
+            try:
+                response = primary_agent.process_query(agent_query_data)
+                self.logger.info(f"Response from {primary_agent.get_name()} (first 100 chars): {str(response)[:100]}...")
+                return response
+            except Exception as e:
+                self.logger.error(
+                    f"Error during query processing with agent {primary_agent.get_name()}: {e}",
+                    exc_info=True
+                )
+                return {"status": "error", "message": f"Failed to process query with {primary_agent.get_name()}: {str(e)}"}
+
+        elif len(selected_agents) > 1 and analysis_result.get("execution_plan"):
+            # This branch handles rich, structured sequential execution if an execution_plan is provided
+            # AND the routing engine returned a list of agents corresponding to that plan.
+            # `selected_agents` here are the `planned_agent_instances` from RoutingEngine.
+
+            execution_plan_details = analysis_result["execution_plan"] # List of step dicts
+            self.logger.info(
+                f"Starting rich sequential execution for {len(selected_agents)} agents based on execution_plan: "
+                f"{[step.get('agent_name') for step in execution_plan_details]}"
             )
-            return {"status": "error", "message": f"Failed to process query with {primary_agent.get_name()}: {str(e)}"}
+
+            execution_context: Dict[str, Any] = {} # To store outputs of steps by their output_id
+            current_step_input_content: str = "" # Will be set based on input_mapping
+            final_response_from_chain: Optional[Dict[str, Any]] = None
+
+            for i, step_def in enumerate(execution_plan_details):
+                if i >= len(selected_agents): # Should not happen if routing_engine validated plan
+                    self.logger.error(f"Execution plan has more steps ({len(execution_plan_details)}) than selected agents ({len(selected_agents)}). Aborting.")
+                    return {"status": "error", "message": "Execution plan and selected agents mismatch."}
+
+                current_agent = selected_agents[i]
+                agent_name_from_plan = step_def.get("agent_name")
+
+                # Sanity check: agent from plan matches agent from selected_agents list
+                if current_agent.get_name() != agent_name_from_plan:
+                    self.logger.error(
+                        f"Mismatch in execution: Step {i+1} expected agent '{agent_name_from_plan}' from plan, "
+                        f"but router provided '{current_agent.get_name()}'. Aborting."
+                    )
+                    return {"status": "error", "message": "Execution plan and routed agent mismatch."}
+
+                self.logger.info(
+                    f"Executing step {i+1}/{len(execution_plan_details)} of plan: "
+                    f"Agent: {current_agent.get_name()}, Task: {step_def.get('task_description', 'N/A')}"
+                )
+
+                # Determine input for the current step
+                input_map = step_def.get("input_mapping", {})
+                prompt_source = input_map.get("prompt_source")
+
+                if prompt_source == "original_query":
+                    current_step_input_content = str(analysis_result.get("processed_query_for_agent", query))
+                elif prompt_source == "ref:previous_step.content":
+                    if i == 0:
+                        self.logger.error("First step in plan cannot reference 'previous_step.content'. Aborting.")
+                        return {"status": "error", "message": "Invalid input_mapping for the first step of the plan."}
+
+                    previous_step_output_id = execution_plan_details[i-1].get("output_id")
+                    if not previous_step_output_id:
+                        self.logger.error(f"Previous step (index {i-1}) is missing 'output_id'. Aborting.")
+                        return {"status": "error", "message": "Previous step in plan missing 'output_id'."}
+
+                    previous_response = execution_context.get(previous_step_output_id)
+                    if not previous_response:
+                        self.logger.error(f"Output from previous step ('{previous_step_output_id}') not found in execution_context. Aborting.")
+                        return {"status": "error", "message": f"Missing output from previous step '{previous_step_output_id}'."}
+                    if previous_response.get("status") != "success":
+                        self.logger.error(f"Previous step ('{previous_step_output_id}') failed. Aborting current step. Details: {previous_response}")
+                        return {"status": "error", "message": f"Previous step '{previous_step_output_id}' failed.", "details": previous_response}
+
+                    content_from_prev_step = previous_response.get("content")
+                    if content_from_prev_step is None:
+                        self.logger.error(f"Previous step ('{previous_step_output_id}') succeeded but returned no 'content'. Aborting.")
+                        return {"status": "error", "message": f"Previous step '{previous_step_output_id}' missing 'content'."}
+                    current_step_input_content = str(content_from_prev_step)
+                else:
+                    self.logger.warning(
+                        f"Unknown or missing 'prompt_source' in input_mapping for step {i+1} ('{step_def.get('task_description')}'). "
+                        f"Defaulting to original processed query for this step."
+                    )
+                    current_step_input_content = str(analysis_result.get("processed_query_for_agent", query))
+
+                # Prepare agent_query_data for the current agent in the plan
+                agent_query_data: Dict[str, Any] = {}
+                gemini_agent_class = self.agent_classes.get("gemini")
+                is_gemini_instance = gemini_agent_class and isinstance(current_agent, gemini_agent_class)
+
+                if is_gemini_instance:
+                    agent_query_data["prompt_parts"] = [current_step_input_content]
+                else:
+                    agent_query_data["prompt"] = current_step_input_content
+
+                # Apply query_data_overrides (e.g., temperature, max_tokens, global system_prompt)
+                # These overrides apply to each step unless the step itself has more specific config from its template (not yet supported)
+                if query_data_overrides:
+                    temp_overrides = query_data_overrides.copy()
+                    # Remove prompt/prompt_parts from general overrides as they are handled by chained content
+                    temp_overrides.pop("prompt", None)
+                    temp_overrides.pop("prompt_parts", None)
+                    # System prompt from overrides applies if not already set by specific step logic (not yet supported)
+                    # or if it's intended as a global override for the chain.
+                    if "system_prompt" in temp_overrides:
+                         agent_query_data["system_prompt"] = temp_overrides.pop("system_prompt")
+                    agent_query_data.update(temp_overrides)
+
+                # If no global system_prompt from overrides, and it's the first step,
+                # use system_prompt from analysis_result if available.
+                if "system_prompt" not in agent_query_data and i == 0 and analysis_result.get("system_prompt"):
+                    agent_query_data["system_prompt"] = analysis_result.get("system_prompt")
+
+
+                self.logger.debug(f"Query data for {current_agent.get_name()} (Plan Step {i+1}): {str(agent_query_data)[:200]}...")
+
+                try:
+                    response = current_agent.process_query(agent_query_data)
+                    self.logger.info(f"Response from {current_agent.get_name()} (Plan Step {i+1}): {str(response)[:100]}...")
+                except Exception as e:
+                    self.logger.error(f"Error processing query with agent {current_agent.get_name()} in plan step {i+1}: {e}", exc_info=True)
+                    return {"status": "error", "message": f"Error in plan step {i+1} with {current_agent.get_name()}: {str(e)}", "agent_name": current_agent.get_name()}
+
+                output_id = step_def.get("output_id")
+                if output_id:
+                    execution_context[output_id] = response
+                else:
+                    self.logger.warning(f"Step {i+1} ({current_agent.get_name()}) missing 'output_id'. Its output cannot be referenced by subsequent steps.")
+
+                final_response_from_chain = response # Store the latest response
+
+                if response.get("status") != "success":
+                    self.logger.warning(
+                        f"Agent {current_agent.get_name()} in plan step {i+1} returned status '{response.get('status')}'. "
+                        f"Message: {response.get('message')}. Halting plan execution."
+                    )
+                    return response
+
+            return final_response_from_chain # Return the result of the last agent in the successful plan
+
+        else: # Fallback to simple sequential if RoutingEngine returned multiple agents but there was no detailed plan
+              # Or if only one agent was selected (len(selected_agents) == 1 was handled above)
+              # This path should ideally not be hit if TaskAnalyzer always provides a plan or a single suggestion.
+              # If RoutingEngine provides multiple agents without a plan, we revert to old simple sequential.
+            self.logger.warning(
+                f"Executing simple sequential mode for {len(selected_agents)} agents as no detailed execution_plan was found/processed."
+            )
+            current_input_content = str(analysis_result.get("processed_query_for_agent", query))
+            legacy_final_response: Dict[str, Any] = {}
+            for i, agent_instance in enumerate(selected_agents): # Should be only one if not a plan
+                self.logger.info(f"Executing agent {i+1}/{len(selected_agents)} (legacy sequential): {agent_instance.get_name()}")
+                agent_query_data = {"prompt": current_input_content} # Simplified for legacy path
+                if query_data_overrides: # Basic override application
+                    temp_overrides = query_data_overrides.copy()
+                    temp_overrides.pop("prompt", None)
+                    temp_overrides.pop("prompt_parts", None)
+                    agent_query_data.update(temp_overrides)
+
+                try:
+                    response = agent_instance.process_query(agent_query_data)
+                    legacy_final_response = response
+                    if response.get("status") != "success" or response.get("content") is None:
+                        self.logger.warning(f"Agent {agent_instance.get_name()} in legacy sequence failed or no content.")
+                        return response
+                    current_input_content = str(response.get("content"))
+                except Exception as e:
+                    self.logger.error(f"Error in legacy sequence with {agent_instance.get_name()}: {e}", exc_info=True)
+                    return {"status": "error", "message": f"Error with {agent_instance.get_name()}: {str(e)}"}
+            return legacy_final_response
+
 
 if __name__ == '__main__':
     print("--- Coordinator Basic Test ---")

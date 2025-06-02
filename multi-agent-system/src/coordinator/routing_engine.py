@@ -23,6 +23,7 @@ class RoutingEngine:
     """
     Selects appropriate agent(s) to handle a query based on the analysis
     provided by the TaskAnalyzer and the list of available agents.
+    Prioritizes an 'execution_plan' if provided, otherwise uses 'suggested_agents'.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -40,32 +41,64 @@ class RoutingEngine:
     def select_agents(self, analysis_result: Dict[str, Any], available_agents: Dict[str, BaseAgent]) -> List[BaseAgent]:
         """
         Selects a list of agent instances based on the analysis result.
+        Prioritizes "execution_plan" if present and valid. Otherwise, uses "suggested_agents"
+        and then fallbacks.
 
         Args:
             analysis_result: The output from TaskAnalyzer.analyze_query.
-                             Expected to have a "suggested_agents" key with a list of agent names.
+                             May contain "execution_plan" (list of agent names for sequence)
+                             or "suggested_agents" (list of agent names for single/parallel).
             available_agents: A dictionary of currently available agent instances,
                               keyed by their names.
 
         Returns:
-            A list of BaseAgent instances deemed suitable for the query.
+            A list of BaseAgent instances deemed suitable for the query, in order if from a plan.
         """
         query_type = analysis_result.get('query_type', 'N/A')
-        suggested_agent_names = analysis_result.get("suggested_agents", [])
+        execution_plan = analysis_result.get("execution_plan") # This is a list of agent names
 
         self.logger.info(
-            f"Selecting agents for query type '{query_type}'. "
-            f"TaskAnalyzer suggested: {suggested_agent_names}. "
-            f"Available agents: {list(available_agents.keys())}."
+            f"Selecting agents for query type '{query_type}'. Available agents: {list(available_agents.keys())}."
         )
+        if execution_plan: # Check if execution_plan is not None and not empty
+            self.logger.info(f"TaskAnalyzer provided an execution plan: {execution_plan}.")
+            planned_agent_instances: List[BaseAgent] = []
+            plan_valid = True
+            for agent_name in execution_plan:
+                if agent_name in available_agents:
+                    planned_agent_instances.append(available_agents[agent_name])
+                else:
+                    self.logger.warning(
+                        f"Agent '{agent_name}' from execution_plan not found in available_agents. Plan is invalid."
+                    )
+                    plan_valid = False
+                    break # Stop processing this plan
+
+            if plan_valid:
+                self.logger.info(
+                    f"Execution plan is valid. Selected {len(planned_agent_instances)} agent(s) in planned order: "
+                    f"{[agent.get_name() for agent in planned_agent_instances]}"
+                )
+                return planned_agent_instances
+            else:
+                # If plan is invalid, should we fall back to suggested_agents or just return empty?
+                # For now, let's say an invalid plan means we cannot proceed with this analysis result confidently.
+                # The Coordinator might then decide to try a default agent or report an error.
+                # Alternatively, it could fall through to suggestion logic.
+                # Current subtask implies returning empty if plan is invalid.
+                self.logger.warning("Execution plan was invalid (agent not found). Returning no agents.")
+                return []
+
+        # If no execution_plan, or if it was empty, proceed with suggested_agents logic
+        suggested_agent_names = analysis_result.get("suggested_agents", [])
+        self.logger.info(f"No valid execution plan. Processing suggested_agents: {suggested_agent_names}.")
 
         selected_agent_instances: List[BaseAgent] = []
 
-        if not available_agents:
-            self.logger.warning("No agents available for routing. Returning empty list.")
+        if not available_agents: # Should have been caught by plan logic if plan existed but agents were empty
+            self.logger.warning("No agents available for routing (should not happen if plan logic was attempted). Returning empty list.")
             return []
 
-        # Priority 1: Process agents suggested by TaskAnalyzer
         if suggested_agent_names:
             for agent_name in suggested_agent_names:
                 if agent_name in available_agents:
@@ -76,9 +109,8 @@ class RoutingEngine:
                         f"TaskAnalyzer suggested agent '{agent_name}', but it was not found in available agents. Skipping."
                     )
         else:
-            self.logger.info("TaskAnalyzer provided no specific agent suggestions.")
+            self.logger.info("TaskAnalyzer provided no specific agent suggestions (and no execution plan).")
 
-        # Priority 2 (Fallback): If no agents were selected from Priority 1
         if not selected_agent_instances:
             self.logger.info(
                 "No agents selected based on TaskAnalyzer's direct suggestions (or suggestions were empty/invalid). "
@@ -86,35 +118,31 @@ class RoutingEngine:
             )
 
             if self.config.get("fallback_to_first_available", True):
-                if available_agents: # Ensure there are agents to fall back to
-                    first_available_agent_name = list(available_agents.keys())[0] # Naive: picks first by dict order
+                if available_agents:
+                    first_available_agent_name = list(available_agents.keys())[0]
                     first_agent_instance = available_agents[first_available_agent_name]
                     selected_agent_instances.append(first_agent_instance)
                     self.logger.info(
                         f"Fallback enabled: Selected first available agent: '{first_agent_instance.get_name()}'."
                     )
                 else:
-                    # This case should ideally be caught by the initial `if not available_agents:` check,
-                    # but added here for robustness if logic path allows.
-                    self.logger.warning("Fallback to first available agent configured, but no agents are available in the system.")
+                    self.logger.warning("Fallback to first available agent configured, but no agents are available.")
             else:
                 self.logger.info("Fallback to first available agent is disabled by configuration.")
 
         if not selected_agent_instances:
             self.logger.error(
-                "Routing engine could not select any agent. No suggestions were processed successfully, and fallback (if any) yielded no agent."
+                "Routing engine could not select any agent. No plan, no valid suggestions, and fallback (if any) yielded no agent."
             )
             return []
 
         selected_names = [agent.get_name() for agent in selected_agent_instances]
-        self.logger.info(f"Routing engine finalized selection. Selected {len(selected_names)} agent(s): {selected_names}")
+        self.logger.info(f"Routing engine finalized selection (suggestion-based). Selected {len(selected_names)} agent(s): {selected_names}")
 
         return selected_agent_instances
 
 
 if __name__ == '__main__':
-    # Example Usage (basic test)
-
     class MockAgent(BaseAgent):
         def __init__(self, name, capabilities_list=None):
             super().__init__(name, {})
@@ -127,64 +155,60 @@ if __name__ == '__main__':
         def get_capabilities(self) -> Dict[str, Any]:
             return self._capabilities
 
+    agent_a = MockAgent("AgentA")
+    agent_b = MockAgent("AgentB")
+    agent_c = MockAgent("AgentC")
 
-    # Available agents in the system
-    agent_smith = MockAgent("AgentSmith", ["code_generation"])
-    agent_jones = MockAgent("AgentJones", ["text_summarization", "general_purpose"])
-    agent_brown = MockAgent("AgentBrown", ["general_qa", "general_purpose"])
+    mock_available_agents = {"AgentA": agent_a, "AgentB": agent_b, "AgentC": agent_c}
 
-    all_agents_map = {
-        agent_smith.get_name(): agent_smith,
-        agent_jones.get_name(): agent_jones,
-        agent_brown.get_name(): agent_brown
-    }
+    engine_with_fallback = RoutingEngine(config={"fallback_to_first_available": True})
+    engine_no_fallback = RoutingEngine(config={"fallback_to_first_available": False})
 
-    print("\n--- Testing RoutingEngine with Fallback Enabled (default) ---")
-    routing_engine_fb_enabled = RoutingEngine(config={"fallback_to_first_available": True})
+    print("--- Testing Execution Plan Logic ---")
+    # Valid Plan
+    analysis_plan_valid = {"execution_plan": ["AgentC", "AgentA"]}
+    selected_plan = engine_no_fallback.select_agents(analysis_plan_valid, mock_available_agents)
+    print(f"Valid Plan Selected: {[a.get_name() for a in selected_plan]}") # Expected: ['AgentC', 'AgentA']
+    assert [a.get_name() for a in selected_plan] == ["AgentC", "AgentA"]
 
-    # Scenario 1: TaskAnalyzer suggests specific, available agent
-    analysis1 = {"suggested_agents": ["AgentJones"]}
-    selected1 = routing_engine_fb_enabled.select_agents(analysis1, all_agents_map)
-    print(f"Scenario 1 (FB Enabled, Specific Suggestion): Selected {[a.get_name() for a in selected1]}")
-    assert len(selected1) == 1 and selected1[0].get_name() == "AgentJones"
+    # Invalid Plan (AgentX not available)
+    analysis_plan_invalid = {"execution_plan": ["AgentA", "AgentX"]}
+    selected_invalid_plan = engine_no_fallback.select_agents(analysis_plan_invalid, mock_available_agents)
+    print(f"Invalid Plan Selected: {[a.get_name() for a in selected_invalid_plan]}") # Expected: []
+    assert len(selected_invalid_plan) == 0
 
-    # Scenario 2: TaskAnalyzer suggestions are unavailable, fallback occurs
-    analysis2 = {"suggested_agents": ["AgentX", "AgentY"]} # None are available
-    selected2 = routing_engine_fb_enabled.select_agents(analysis2, all_agents_map)
-    print(f"Scenario 2 (FB Enabled, Suggestions Unavailable): Selected {[a.get_name() for a in selected2]}")
-    # Expects first agent from all_agents_map (AgentSmith) due to fallback
-    assert len(selected2) == 1 and selected2[0].get_name() == "AgentSmith"
+    # Empty Plan - should fall through to suggestion logic (which then might use fallback)
+    analysis_empty_plan = {"execution_plan": [], "suggested_agents": ["AgentB"]}
+    selected_empty_plan = engine_no_fallback.select_agents(analysis_empty_plan, mock_available_agents)
+    print(f"Empty Plan (uses suggestions): {[a.get_name() for a in selected_empty_plan]}") # Expected: ['AgentB']
+    assert [a.get_name() for a in selected_empty_plan] == ["AgentB"]
 
-    # Scenario 3: TaskAnalyzer returns empty suggestions, fallback occurs
-    analysis3 = {"suggested_agents": []}
-    selected3 = routing_engine_fb_enabled.select_agents(analysis3, all_agents_map)
-    print(f"Scenario 3 (FB Enabled, Empty Suggestions): Selected {[a.get_name() for a in selected3]}")
-    assert len(selected3) == 1 and selected3[0].get_name() == "AgentSmith"
+    analysis_empty_plan_fb = {"execution_plan": [], "suggested_agents": ["AgentX"]} # Suggestion invalid
+    selected_empty_plan_fb = engine_with_fallback.select_agents(analysis_empty_plan_fb, mock_available_agents)
+    print(f"Empty Plan (suggestion invalid, uses fallback): {[a.get_name() for a in selected_empty_plan_fb]}") # Expected: ['AgentA']
+    assert [a.get_name() for a in selected_empty_plan_fb] == ["AgentA"]
 
-    print("\n--- Testing RoutingEngine with Fallback Disabled ---")
-    routing_engine_fb_disabled = RoutingEngine(config={"fallback_to_first_available": False})
 
-    # Scenario 4: TaskAnalyzer suggests specific, available agent (fallback setting irrelevant)
-    analysis4 = {"suggested_agents": ["AgentBrown"]}
-    selected4 = routing_engine_fb_disabled.select_agents(analysis4, all_agents_map)
-    print(f"Scenario 4 (FB Disabled, Specific Suggestion): Selected {[a.get_name() for a in selected4]}")
-    assert len(selected4) == 1 and selected4[0].get_name() == "AgentBrown"
+    print("\n--- Testing Suggestion Logic (No Execution Plan) ---")
+    analysis_sugg_only = {"suggested_agents": ["AgentB", "AgentC"]}
+    selected_sugg = engine_no_fallback.select_agents(analysis_sugg_only, mock_available_agents)
+    print(f"Suggestion Only Selected: {[a.get_name() for a in selected_sugg]}") # Expected: ['AgentB', 'AgentC']
+    # Order might not be guaranteed if based on dict iteration for available_agents lookup, but here suggestions are ordered
+    assert [a.get_name() for a in selected_sugg] == ["AgentB", "AgentC"]
 
-    # Scenario 5: TaskAnalyzer suggestions are unavailable, no fallback
-    analysis5 = {"suggested_agents": ["AgentX"]}
-    selected5 = routing_engine_fb_disabled.select_agents(analysis5, all_agents_map)
-    print(f"Scenario 5 (FB Disabled, Suggestions Unavailable): Selected {[a.get_name() for a in selected5]}")
-    assert len(selected5) == 0
+    analysis_sugg_invalid_fb = {"suggested_agents": ["AgentY"]}
+    selected_sugg_invalid_fb = engine_with_fallback.select_agents(analysis_sugg_invalid_fb, mock_available_agents)
+    print(f"Suggestion Invalid (uses fallback): {[a.get_name() for a in selected_sugg_invalid_fb]}") # Expected: ['AgentA']
+    assert [a.get_name() for a in selected_sugg_invalid_fb] == ["AgentA"]
 
-    # Scenario 6: TaskAnalyzer returns empty suggestions, no fallback
-    analysis6 = {"suggested_agents": []}
-    selected6 = routing_engine_fb_disabled.select_agents(analysis6, all_agents_map)
-    print(f"Scenario 6 (FB Disabled, Empty Suggestions): Selected {[a.get_name() for a in selected6]}")
-    assert len(selected6) == 0
+    analysis_no_sugg_fb = {"suggested_agents": []}
+    selected_no_sugg_fb = engine_with_fallback.select_agents(analysis_no_sugg_fb, mock_available_agents)
+    print(f"No Suggestions (uses fallback): {[a.get_name() for a in selected_no_sugg_fb]}") # Expected: ['AgentA']
+    assert [a.get_name() for a in selected_no_sugg_fb] == ["AgentA"]
 
-    # Scenario 7: No agents available in the system
-    selected7 = routing_engine_fb_enabled.select_agents(analysis1, {}) # analysis1 suggests AgentJones
-    print(f"Scenario 7 (No agents available): Selected {[a.get_name() for a in selected7]}")
-    assert len(selected7) == 0
+    analysis_no_sugg_no_fb = {"suggested_agents": []}
+    selected_no_sugg_no_fb = engine_no_fallback.select_agents(analysis_no_sugg_no_fb, mock_available_agents)
+    print(f"No Suggestions (no fallback): {[a.get_name() for a in selected_no_sugg_no_fb]}") # Expected: []
+    assert len(selected_no_sugg_no_fb) == 0
 
-    print("\nRoutingEngine refined demonstration completed.")
+    print("\nRoutingEngine refined demonstration with plans completed.")

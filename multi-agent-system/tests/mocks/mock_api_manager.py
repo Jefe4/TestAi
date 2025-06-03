@@ -12,7 +12,7 @@ class MockAPIManager:
             error_response = {
                 "status": "error", # This key is not standard in APIManager error returns, 'error' is usually the key for the type
                 "error": response_data, # e.g. "HTTPError", "Timeout"
-                "message": error_content if error_content else "Simulated error",
+                "message": error_content if error_content else "Simulated error", 
                 "status_code": 500 # Default status code for simulated error
             }
             if isinstance(response_data, dict) and "status_code" in response_data : # if a full error dict is passed
@@ -24,14 +24,14 @@ class MockAPIManager:
             # self.make_request.side_effect = SomeExpectedException(response_data)
         else:
             self.make_request.return_value = response_data
-
+    
     def reset_mocks(self):
         self.make_request.reset_mock()
 
 # Example of how it might be used (optional to include in the file itself)
 if __name__ == '__main__':
     mock_api = MockAPIManager()
-
+    
     # Test setting a success response
     mock_api.set_make_request_response({"data": "success_payload", "status_code": 200})
     success_result = mock_api.make_request("test_service", "test_endpoint", method="GET")

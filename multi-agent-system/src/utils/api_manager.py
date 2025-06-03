@@ -41,7 +41,7 @@ class APIManager:
         self.service_configs: Dict[str, Dict[str, Any]] = {} # Allow Any for base_url etc.
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "MultiAgentSystem/1.0"})
-
+        
         actual_config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH
         self.load_service_configs(actual_config_path)
         self.logger.info(f"APIManager initialized. Loaded configs for: {list(self.service_configs.keys())}")
@@ -52,7 +52,7 @@ class APIManager:
         Prioritizes loaded config from file, then environment variables, then hardcoded defaults.
         """
         self.logger.info(f"Attempting to load service configurations from: {config_path}")
-
+        
         file_configs: Dict[str, Any] = {}
         try:
             if os.path.exists(config_path):
@@ -87,19 +87,19 @@ class APIManager:
             if service_name not in self.service_configs or \
                "api_key" not in self.service_configs[service_name] or \
                "base_url" not in self.service_configs[service_name]:
-
+                
                 current_service_config = self.service_configs.get(service_name, {})
-
+                
                 api_key = current_service_config.get("api_key") or \
                             os.getenv(details["api_key_env"], f"YOUR_{service_name.upper()}_KEY_HERE")
                 base_url = current_service_config.get("base_url") or details["base_url"]
-
+                
                 self.service_configs[service_name] = {
                     "api_key": api_key,
                     "base_url": base_url,
                     **current_service_config # Preserve other settings from file if they exist
                 }
-
+                
                 if api_key == f"YOUR_{service_name.upper()}_KEY_HERE":
                     self.logger.warning(f"API key for {service_name} is a placeholder. Set {details['api_key_env']} or update config file.")
                 elif service_name not in file_configs: # Only log this if it wasn't in the loaded file config
@@ -125,8 +125,8 @@ class APIManager:
         elif service_name == "claude": # x-api-key style
             return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
         elif service_name == "windsurf": # Custom token or other
-            return {"X-Custom-Auth-Token": api_key}
-
+            return {"X-Custom-Auth-Token": api_key} 
+        
         self.logger.warning(f"Auth header style not explicitly defined for service: {service_name}. Returning empty auth header.")
         return {}
 
@@ -150,7 +150,7 @@ class APIManager:
 
         base_url = service_info["base_url"]
         url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
-
+        
         auth_header = self.get_auth_header(service_name)
         headers = {"Content-Type": "application/json", **auth_header, **(extra_headers or {})}
 
@@ -160,18 +160,18 @@ class APIManager:
             if data is not None:
                 request_args["json"] = data
         elif data: # For GET, DELETE, etc. if data is provided, assume it's for params
-            request_args["params"] = data
-
+            request_args["params"] = data 
+        
         if params: # Explicit params always get precedence or are merged
             request_args["params"] = {**(request_args.get("params", {})), **params}
-
+            
         self.logger.debug(f"Making {method.upper()} request to {url} with json_data: {request_args.get('json')}, params: {request_args.get('params')}")
 
         try:
             response = self.session.request(**request_args)
             self.handle_rate_limiting(service_name, response.headers)
-            response.raise_for_status()
-
+            response.raise_for_status() 
+            
             if not response.content:
                  self.logger.info(f"Received empty but successful (status {response.status_code}) response from {service_name} for endpoint {endpoint}.")
                  return {"status": "success", "data": None, "status_code": response.status_code}
@@ -195,7 +195,7 @@ class APIManager:
             return {"error": "JSONDecodeError", "message": str(e), "raw_response": response.text if 'response' in locals() else "N/A", "status_code": 502} # Bad Gateway
 
 
-    def handle_rate_limiting(self, service_name: str, response_headers: Any):
+    def handle_rate_limiting(self, service_name: str, response_headers: Any): 
         """
         Placeholder for handling rate limiting based on response headers.
         `response_headers` is a requests.structures.CaseInsensitiveDict
@@ -230,7 +230,7 @@ if __name__ == '__main__':
         sample_config_data = {
             "deepseek": {
                 "api_key": "YOUR_DEEPSEEK_KEY_FROM_FILE", # Will be overridden by env var if DEEPSEEK_API_KEY is set
-                "base_url": "https://api.deepseek.com/v1/file_config_test"
+                "base_url": "https://api.deepseek.com/v1/file_config_test" 
             },
             "claude": {
                 "api_key": os.getenv("CLAUDE_API_KEY", "YOUR_CLAUDE_KEY_FROM_FILE_OR_ENV_IN_MAIN")
@@ -251,8 +251,8 @@ if __name__ == '__main__':
     os.environ["CURSOR_API_KEY"] = "env_cursor_key_123"
     os.environ["GEMINI_API_KEY"] = "env_gemini_key_xyz" # This should be used if not in file
 
-    manager = APIManager(config_path=dummy_config_path)
-
+    manager = APIManager(config_path=dummy_config_path) 
+    
     print("\n--- Service Configurations Loaded ---")
     for service, conf in manager.service_configs.items():
         masked_key = str(conf.get('api_key', ''))[:5] + '...' if conf.get('api_key') else 'N/A'
@@ -270,9 +270,9 @@ if __name__ == '__main__':
     # Add a temporary public API config for testing make_request directly
     manager.service_configs["public_jsonplaceholder"] = {
         "base_url": "https://jsonplaceholder.typicode.com",
-        "api_key": "unused_dummy_key"
+        "api_key": "unused_dummy_key" 
     }
-
+    
     print("  Testing GET request...")
     get_response = manager.make_request(
         service_name="public_jsonplaceholder",

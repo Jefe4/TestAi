@@ -38,9 +38,9 @@ class DeepSeekAgent(BaseAgent):
         """
         super().__init__(agent_name, config)
         self.api_manager = api_manager
-
+        
         # Default model if not specified in config
-        self.model = self.config.get("model", "deepseek-coder")
+        self.model = self.config.get("model", "deepseek-coder") 
         self.logger.info(f"DeepSeekAgent '{self.agent_name}' initialized with model '{self.model}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
@@ -89,7 +89,7 @@ class DeepSeekAgent(BaseAgent):
             "temperature": query_data.get("temperature", self.config.get("temperature", 0.3)), # Allow query-time override
             # Other parameters like 'stream', 'top_p' can be added here from config or query_data
         }
-
+        
         self.logger.debug(f"DeepSeek API payload: {payload}")
 
         # Make the API call via APIManager
@@ -117,7 +117,7 @@ class DeepSeekAgent(BaseAgent):
             # { "choices": [ { "index": 0, "message": { "role": "assistant", "content": "response text" }, "finish_reason": "stop" } ] ... }
             extracted_text = response_data.get("choices", [{}])[0].get("message", {}).get("content")
             finish_reason = response_data.get("choices", [{}])[0].get("finish_reason")
-
+            
             if extracted_text is None:
                 self.logger.error(f"Failed to extract content from DeepSeek response. Response: {response_data}")
                 return {"status": "error", "message": "Invalid response structure from DeepSeek API."}
@@ -137,11 +137,11 @@ class DeepSeekAgent(BaseAgent):
 if __name__ == '__main__':
     # This block is for basic demonstration and testing.
     # It requires APIManager and BaseAgent to be correctly set up.
-
+    
     # Setup a dummy APIManager and logger for local testing
     # In a real application, these would be part of the main system.
     from src.utils.logger import get_logger as setup_logger # type: ignore
-
+    
     # Dummy APIManager that simulates responses
     class DummyAPIManager:
         def __init__(self):
@@ -162,7 +162,7 @@ if __name__ == '__main__':
                 # Simulate a successful DeepSeek API response
                 if "error" in data.get("messages")[1].get("content","").lower(): # Simulate error
                      return {"error": "Simulated API Error", "message": "The prompt contained 'error'", "status_code": 400}
-
+                
                 return {
                     "id": "chatcmpl_xxxxxxxxxxxxxxxxx",
                     "object": "chat.completion",
@@ -187,7 +187,7 @@ if __name__ == '__main__':
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
     print("--- Testing DeepSeekAgent ---")
-
+    
     # Initialize dummy components
     dummy_api_manager = DummyAPIManager()
     agent_config = {
@@ -196,7 +196,7 @@ if __name__ == '__main__':
         "temperature": 0.5,
         "default_system_prompt": "You are a specialized DeepSeek test assistant."
     }
-
+    
     deepseek_agent = DeepSeekAgent(
         agent_name="TestDeepSeekAgent001",
         api_manager=dummy_api_manager, # type: ignore
@@ -235,7 +235,7 @@ if __name__ == '__main__':
     print(f"Response 3: {response3}")
     assert response3["status"] == "error"
     assert response3["message"] == "User prompt missing"
-
+    
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error."} # DummyAPIManager will simulate error

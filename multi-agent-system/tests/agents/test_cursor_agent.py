@@ -51,7 +51,7 @@ class TestCursorAgent(unittest.TestCase):
         mock_response_content = "Generated code by Cursor"
         mock_api_response = {"response": mock_response_content, "id": "curs_xxx"}
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test cursor query"}
         result = self.agent.process_query(query_data)
 
@@ -60,7 +60,7 @@ class TestCursorAgent(unittest.TestCase):
         self.assertEqual(call_args[1]['service_name'], 'cursor')
         self.assertEqual(call_args[1]['endpoint'], 'compose')
         self.assertEqual(call_args[1]['method'], 'POST')
-
+        
         actual_payload = call_args[1]['data']
         expected_full_prompt = f"{self.agent_config['default_system_prompt']}\n\nUser Query:\n{query_data['prompt']}"
         self.assertEqual(actual_payload['prompt'], expected_full_prompt)
@@ -70,7 +70,7 @@ class TestCursorAgent(unittest.TestCase):
         self.assertEqual(actual_payload['temperature'], self.agent_config['temperature'])
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_content,
             "raw_response": mock_api_response
         }
@@ -88,10 +88,10 @@ class TestCursorAgent(unittest.TestCase):
 
         self.mock_api_manager.make_request.assert_called_once()
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
-
+        
         expected_full_prompt = f"{custom_system_prompt}\n\nUser Query:\n{query_data['prompt']}"
         self.assertEqual(actual_payload['prompt'], expected_full_prompt)
-
+        
         expected_result = {"status": "success", "content": mock_response_content, "raw_response": mock_api_response}
         self.assertEqual(result, expected_result)
 
@@ -103,7 +103,7 @@ class TestCursorAgent(unittest.TestCase):
 
         query_data = {"prompt": "test query for error"}
         result = self.agent.process_query(query_data)
-
+        
         self.mock_api_manager.make_request.assert_called_once()
         expected_result = {
             "status": "error",
@@ -116,7 +116,7 @@ class TestCursorAgent(unittest.TestCase):
     def test_process_query_missing_prompt(self):
         query_data = {} # Empty query
         result = self.agent.process_query(query_data)
-
+        
         expected_result = {"status": "error", "message": "User query/prompt missing"}
         self.assertEqual(result, expected_result)
         self.mock_api_manager.make_request.assert_not_called()
@@ -126,10 +126,10 @@ class TestCursorAgent(unittest.TestCase):
         mock_response_content = "Alternative code by Cursor"
         mock_api_response = {"generated_code": mock_response_content} # Using 'generated_code' field
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test for generated_code field"}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], mock_response_content)
 
@@ -137,10 +137,10 @@ class TestCursorAgent(unittest.TestCase):
         mock_response_content = "Text field content by Cursor"
         mock_api_response = {"text": mock_response_content} # Using 'text' field
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test for text field"}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], mock_response_content)
 
@@ -148,10 +148,10 @@ class TestCursorAgent(unittest.TestCase):
         mock_response_content = "Completion field content by Cursor"
         mock_api_response = {"completion": mock_response_content} # Using 'completion' field
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test for completion field"}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], mock_response_content)
 
@@ -162,7 +162,7 @@ class TestCursorAgent(unittest.TestCase):
         self.mock_api_manager.set_make_request_response(mock_api_response)
 
         query_data = {
-            "prompt": "query for config overrides",
+            "prompt": "query for config overrides", 
             "max_tokens": 600, # Override max_tokens
             "temperature_override": 0.88 # Override temperature
         }

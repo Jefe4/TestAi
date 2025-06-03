@@ -25,7 +25,7 @@ try:
     from google.generativeai.types import HarmCategory, HarmBlockThreshold, GenerationConfigDict, ContentDict
     # For older versions, ContentDict might not exist, parts are just dicts.
 except ImportError:
-    genai = None # type: ignore
+    genai = None # type: ignore 
     HarmCategory = None # type: ignore
     HarmBlockThreshold = None # type: ignore
     GenerationConfigDict = Dict # type: ignore # Fallback type
@@ -48,7 +48,7 @@ class GeminiAgent(BaseAgent):
             agent_name: The name of the agent.
             api_manager: An instance of APIManager (kept for constructor consistency).
             config: Optional configuration dictionary for the agent.
-                    Expected keys: "api_key", "model", "generation_config",
+                    Expected keys: "api_key", "model", "generation_config", 
                                    "safety_settings", "default_system_instruction".
         """
         super().__init__(agent_name, config)
@@ -67,7 +67,7 @@ class GeminiAgent(BaseAgent):
             else:
                 self.logger.error("Gemini API key not found in config or GEMINI_API_KEY environment variable.")
                 raise ValueError("Gemini API key missing. Provide it in agent config or as GEMINI_API_KEY env variable.")
-
+        
         try:
             genai.configure(api_key=self.api_key)
         except Exception as e:
@@ -75,15 +75,15 @@ class GeminiAgent(BaseAgent):
             raise ConnectionError(f"Failed to configure Gemini SDK: {e}")
 
         self.model_name = self.config.get("model", "gemini-1.5-flash-latest")
-
+        
         # Default generation config
         default_gen_config: GenerationConfigDict = { # type: ignore
-            "temperature": 0.7, "top_p": 1.0, "top_k": 1, "max_output_tokens": 2048
+            "temperature": 0.7, "top_p": 1.0, "top_k": 1, "max_output_tokens": 2048 
         }
         # Merge with user-provided config
         user_gen_config = self.config.get("generation_config", {})
         self.generation_config: GenerationConfigDict = {**default_gen_config, **user_gen_config} # type: ignore
-
+        
         # Default safety settings
         default_safety_settings = [
             {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
@@ -92,7 +92,7 @@ class GeminiAgent(BaseAgent):
             {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
         ]
         self.safety_settings = self.config.get("safety_settings", default_safety_settings)
-
+        
         self.system_instruction = self.config.get("default_system_instruction") # Can be None
 
         try:
@@ -100,12 +100,12 @@ class GeminiAgent(BaseAgent):
                 model_name=self.model_name,
                 generation_config=self.generation_config, # type: ignore
                 safety_settings=self.safety_settings, # type: ignore
-                system_instruction=self.system_instruction if self.system_instruction else None
+                system_instruction=self.system_instruction if self.system_instruction else None 
             )
         except Exception as e:
             self.logger.error(f"Failed to instantiate Gemini GenerativeModel: {e}")
             raise RuntimeError(f"Gemini model instantiation failed: {e}")
-
+            
         self.logger.info(f"GeminiAgent '{self.agent_name}' initialized with model '{self.model_name}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
@@ -115,7 +115,7 @@ class GeminiAgent(BaseAgent):
         return {
             "description": "Agent for multimodal understanding, data analysis, and general queries using Google Gemini.",
             "capabilities": ["text_generation", "multimodal_input", "data_analysis", "function_calling", "chat"],
-            "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro"]
+            "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro"] 
         }
 
     def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,7 +158,7 @@ class GeminiAgent(BaseAgent):
             # Use current model's settings unless overrides are provided
             current_gen_config = generation_config_override if generation_config_override else self.model.generation_config
             current_safety_settings = safety_settings_override if safety_settings_override else self.model.safety_settings
-
+            
             # The SDK's generate_content method takes generation_config and safety_settings directly.
             response = self.model.generate_content(
                 contents=user_prompt_parts, # type: ignore
@@ -166,14 +166,14 @@ class GeminiAgent(BaseAgent):
                 safety_settings=current_safety_settings # type: ignore
                 # stream=False by default
             )
-
+            
             # response.text provides concatenated text from all parts if successful
             # If there's a finish_reason like SAFETY, response.text might raise an error.
             # It's safer to check prompt_feedback first.
             if response.prompt_feedback and response.prompt_feedback.block_reason:
                 self.logger.warning(f"Gemini prompt blocked due to: {response.prompt_feedback.block_reason}")
                 return {
-                    "status": "error",
+                    "status": "error", 
                     "message": f"Prompt blocked by Gemini due to {response.prompt_feedback.block_reason}",
                     "details": str(response.prompt_feedback)
                 }
@@ -197,7 +197,7 @@ class GeminiAgent(BaseAgent):
 
 
             self.logger.info(f"Successfully received response from Gemini.")
-
+            
             # Construct a more detailed response if needed
             response_parts_str = []
             if response.parts:
@@ -207,7 +207,7 @@ class GeminiAgent(BaseAgent):
                     elif hasattr(part, 'function_call'):
                         response_parts_str.append(f"FunctionCall: {part.function_call.name}")
                     # Add more part types as needed (e.g., blob for file data)
-
+            
             return {
                 "status": "success",
                 "content": extracted_text, # Main textual content
@@ -285,7 +285,7 @@ if __name__ == '__main__':
              "generation_config": {"temperature": 0.5, "max_output_tokens": 100},
              "default_system_instruction": "You are a concise assistant."
         }
-
+        
         # Dummy APIManager for constructor consistency
         dummy_api_manager = APIManager() if 'APIManager' in globals() else None # type: ignore
 

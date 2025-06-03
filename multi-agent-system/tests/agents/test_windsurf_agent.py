@@ -53,7 +53,7 @@ class TestWindsurfAgent(unittest.TestCase):
         mock_response_content = "Generated web content by Windsurf"
         mock_api_response = {"response": mock_response_content, "id": "wind_xyz"}
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test windsurf query"}
         result = self.agent.process_query(query_data)
 
@@ -62,7 +62,7 @@ class TestWindsurfAgent(unittest.TestCase):
         self.assertEqual(call_args[1]['service_name'], 'windsurf')
         self.assertEqual(call_args[1]['endpoint'], 'generate')
         self.assertEqual(call_args[1]['method'], 'POST')
-
+        
         actual_payload = call_args[1]['data']
         expected_full_prompt = (f"System Prompt:\n{self.agent_config['default_system_prompt']}\n\n"
                                 f"User Query:\n{query_data['prompt']}")
@@ -73,7 +73,7 @@ class TestWindsurfAgent(unittest.TestCase):
         self.assertEqual(actual_payload['temperature'], self.agent_config['temperature'])
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_content,
             "raw_response": mock_api_response
         }
@@ -93,11 +93,11 @@ class TestWindsurfAgent(unittest.TestCase):
 
         self.mock_api_manager.make_request.assert_called_once()
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
-
+        
         expected_full_prompt = (f"System Prompt:\n{custom_system_prompt}\n\n"
                                 f"User Query:\n{query_data['prompt']}")
         self.assertEqual(actual_payload['prompt'], expected_full_prompt)
-
+        
         expected_result = {"status": "success", "content": mock_response_content, "raw_response": mock_api_response}
         self.assertEqual(result, expected_result)
 
@@ -121,7 +121,7 @@ class TestWindsurfAgent(unittest.TestCase):
 
         query_data = {"prompt": "test query for Windsurf error"}
         result = self.agent.process_query(query_data)
-
+        
         self.mock_api_manager.make_request.assert_called_once()
         expected_result = {
             "status": "error",
@@ -134,7 +134,7 @@ class TestWindsurfAgent(unittest.TestCase):
     def test_process_query_missing_prompt(self):
         query_data = {} # Empty query
         result = self.agent.process_query(query_data)
-
+        
         expected_result = {"status": "error", "message": "User query/prompt missing"}
         self.assertEqual(result, expected_result)
         self.mock_api_manager.make_request.assert_not_called()
@@ -144,10 +144,10 @@ class TestWindsurfAgent(unittest.TestCase):
         mock_response_content = "Alternative web content from Windsurf"
         mock_api_response = {"generated_content": mock_response_content} # Using 'generated_content'
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test for generated_content field in Windsurf"}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], mock_response_content)
 
@@ -155,10 +155,10 @@ class TestWindsurfAgent(unittest.TestCase):
         mock_response_content = "Text field content from Windsurf"
         mock_api_response = {"text": mock_response_content} # Using 'text'
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test for text field in Windsurf"}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], mock_response_content)
 
@@ -169,7 +169,7 @@ class TestWindsurfAgent(unittest.TestCase):
         self.mock_api_manager.set_make_request_response(mock_api_response)
 
         query_data = {
-            "prompt": "query for Windsurf config overrides",
+            "prompt": "query for Windsurf config overrides", 
             "max_tokens": 700, # Override max_tokens
             "temperature_override": 0.11 # Override temperature
         }

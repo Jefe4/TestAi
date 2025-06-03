@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any # Added Dict, Optional, Any for type hinting
 # Assuming multi-agent-system is the root of the PYTHONPATH or src is added to path
 # For a direct relative import if this file is run as part of a package:
-from ..utils.logger import get_logger
+from ..utils.logger import get_logger 
 
 class BaseAgent(ABC):
     """
@@ -25,10 +25,10 @@ class BaseAgent(ABC):
         self.agent_name = agent_name
         self.config = config if config is not None else {}
         # Use the project's custom logger
-        self.logger = get_logger(f"BaseAgent.{self.agent_name}")
-
+        self.logger = get_logger(f"BaseAgent.{self.agent_name}") 
+        
         # More careful logging of config, avoid logging potentially sensitive full config
-        log_config_summary = {k: v for k, v in self.config.items() if k not in ['api_key', 'api_token']}
+        log_config_summary = {k: v for k, v in self.config.items() if k not in ['api_key', 'api_token']} 
         self.logger.info(f"Agent '{self.agent_name}' initialized. Config summary: {log_config_summary}")
 
 

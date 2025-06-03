@@ -1,10 +1,10 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock 
 
 # Assuming tests are run from the 'multi-agent-system' directory root,
 # or 'multi-agent-system/src' is in PYTHONPATH.
 try:
-    from src.agents.deepseek_agent import DeepSeekAgent
+    from src.agents.deepseek_agent import DeepSeekAgent 
     from tests.mocks.mock_api_manager import MockAPIManager
 except ImportError:
     # Fallback for different execution contexts
@@ -13,7 +13,7 @@ except ImportError:
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from src.agents.deepseek_agent import DeepSeekAgent
+    from src.agents.deepseek_agent import DeepSeekAgent 
     from tests.mocks.mock_api_manager import MockAPIManager
 
 
@@ -25,7 +25,7 @@ class TestDeepSeekAgent(unittest.TestCase):
             "default_system_prompt": "You are a general test DeepSeek model.",
             "max_tokens": 1500, # Default from agent implementation
             "temperature": 0.3   # Default from agent implementation
-        }
+        } 
         self.agent = DeepSeekAgent(
             agent_name="TestDeepSeek",
             api_manager=self.mock_api_manager, # type: ignore
@@ -57,7 +57,7 @@ class TestDeepSeekAgent(unittest.TestCase):
             "finish_reason": "stop" # Added based on DeepSeekAgent's parsing
         }
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test query"}
         result = self.agent.process_query(query_data)
 
@@ -66,7 +66,7 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertEqual(call_args[1]['service_name'], 'deepseek')
         self.assertEqual(call_args[1]['endpoint'], 'chat/completions')
         self.assertEqual(call_args[1]['method'], 'POST')
-
+        
         actual_payload = call_args[1]['data']
         self.assertEqual(actual_payload['model'], self.agent_config['model'])
         self.assertEqual(len(actual_payload['messages']), 2)
@@ -78,7 +78,7 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertEqual(actual_payload['temperature'], self.agent_config['temperature'])
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_content,
             "finish_reason": "stop",
             "usage": {"total_tokens": 10, "prompt_tokens": 5, "completion_tokens": 5}
@@ -95,7 +95,7 @@ class TestDeepSeekAgent(unittest.TestCase):
 
         query_data = {"prompt": "test query for API error"}
         result = self.agent.process_query(query_data)
-
+        
         self.mock_api_manager.make_request.assert_called_once()
         expected_result = {
             "status": "error",
@@ -108,7 +108,7 @@ class TestDeepSeekAgent(unittest.TestCase):
     def test_process_query_missing_prompt(self):
         query_data = {} # Empty query_data, no prompt
         result = self.agent.process_query(query_data)
-
+        
         expected_result = {"status": "error", "message": "User prompt missing"}
         self.assertEqual(result, expected_result)
         self.mock_api_manager.make_request.assert_not_called()
@@ -132,7 +132,7 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.mock_api_manager.set_make_request_response(mock_api_response)
 
         query_data = {
-            "prompt": "custom test query",
+            "prompt": "custom test query", 
             "system_prompt": "Override system info for this query.",
             "temperature": 0.88, # Query-time override for temperature
             "max_tokens": 55    # Query-time override for max_tokens
@@ -151,7 +151,7 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertEqual(actual_payload['messages'][1]['content'], "custom test query")
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_content,
             "finish_reason": "stop",
             "usage": {"total_tokens": 20}

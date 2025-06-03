@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock, PropertyMock
 # Attempt to import google.generativeai.types for type hinting and constants in tests
 # The actual 'genai' module used by the agent will be mocked.
 try:
-    import google.generativeai.types as genai_types
+    import google.generativeai.types as genai_types 
     from google.generativeai.types import HarmCategory, HarmBlockThreshold # For convenience
     SDK_AVAILABLE = True
 except ImportError:
@@ -25,7 +25,7 @@ except ImportError:
 try:
     from src.agents.gemini_agent import GeminiAgent
     # APIManager is needed for constructor, but not directly used by GeminiAgent for calls
-    from src.utils.api_manager import APIManager
+    from src.utils.api_manager import APIManager 
 except ImportError:
     # Fallback for different execution contexts
     import sys
@@ -50,11 +50,11 @@ class TestGeminiAgent(unittest.TestCase):
 
         # Mock the 'genai' module that the GeminiAgent imports
         self.mock_genai_module = MagicMock()
-
+        
         # Mock the GenerativeModel class and its instance
         self.mock_generative_model_instance = MagicMock()
         self.mock_genai_module.GenerativeModel.return_value = self.mock_generative_model_instance
-
+        
         # Mock the configure function
         self.mock_genai_module.configure = MagicMock()
 
@@ -70,13 +70,13 @@ class TestGeminiAgent(unittest.TestCase):
 
         self.genai_patcher = patch('src.agents.gemini_agent.genai', self.mock_genai_module)
         self.mock_genai_module_for_agent = self.genai_patcher.start()
-
+        
         # Mock APIManager, though not used for core functionality by GeminiAgent
         self.mock_api_manager = MagicMock(spec=APIManager)
 
         self.agent = GeminiAgent(
             agent_name="TestGemini",
-            api_manager=self.mock_api_manager,
+            api_manager=self.mock_api_manager, 
             config=self.agent_config
         )
         self.agent.logger = MagicMock() # Suppress logging output
@@ -87,11 +87,11 @@ class TestGeminiAgent(unittest.TestCase):
     def test_initialization(self):
         self.assertEqual(self.agent.get_name(), "TestGemini")
         self.mock_genai_module_for_agent.configure.assert_called_once_with(api_key="TEST_GEMINI_KEY")
-
+        
         expected_safety_settings_for_sdk = [
             {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
         ]
-
+        
         self.mock_genai_module_for_agent.GenerativeModel.assert_called_once_with(
             model_name="gemini-test-model",
             generation_config=self.agent_config["generation_config"],
@@ -110,12 +110,12 @@ class TestGeminiAgent(unittest.TestCase):
                 api_manager=self.mock_api_manager,
                 config=config_no_key
             )
-
+    
     @patch.dict(os.environ, {"GEMINI_API_KEY": "env_gemini_key"}, clear=True)
     def test_initialization_api_key_from_env(self):
         config_no_key = self.agent_config.copy()
         del config_no_key["api_key"]
-
+        
         agent_env_key = GeminiAgent(
             agent_name="TestGeminiEnvKey",
             api_manager=self.mock_api_manager,
@@ -139,7 +139,7 @@ class TestGeminiAgent(unittest.TestCase):
         mock_response.prompt_feedback = None # Simulate no blocking
         mock_response.candidates = [MagicMock(finish_reason=MagicMock(name="STOP"), safety_ratings=[])]
         self.mock_generative_model_instance.generate_content.return_value = mock_response
-
+        
         query_data = {"prompt_parts": ["test gemini query"]}
         result = self.agent.process_query(query_data)
 
@@ -148,9 +148,9 @@ class TestGeminiAgent(unittest.TestCase):
             generation_config=self.agent.generation_config, # type: ignore
             safety_settings=self.agent.safety_settings # type: ignore
         )
-
+        
         expected_result_subset = {
-            "status": "success",
+            "status": "success", 
             "content": "Test response from Gemini",
             "finish_reason": "STOP"
         }
@@ -159,10 +159,10 @@ class TestGeminiAgent(unittest.TestCase):
 
     def test_process_query_sdk_error(self):
         self.mock_generative_model_instance.generate_content.side_effect = Exception("Gemini SDK Internal Error")
-
+        
         query_data = {"prompt_parts": ["test query for SDK error"]}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["message"], "Gemini SDK Internal Error")
         self.agent.logger.error.assert_any_call("Gemini API call failed: Exception - Gemini SDK Internal Error")
@@ -171,7 +171,7 @@ class TestGeminiAgent(unittest.TestCase):
         result_empty = self.agent.process_query({})
         self.assertEqual(result_empty["status"], "error")
         self.assertIn("Valid 'prompt_parts' (list) missing or empty", result_empty["message"])
-
+        
         result_none = self.agent.process_query({"prompt_parts": None})
         self.assertEqual(result_none["status"], "error")
         self.assertIn("Valid 'prompt_parts' (list) missing or empty", result_none["message"])
@@ -194,9 +194,9 @@ class TestGeminiAgent(unittest.TestCase):
         dynamic_safety_settings = [
             {"category": HarmCategory.HARM_CATEGORY_SEXUAL, "threshold": HarmBlockThreshold.BLOCK_NONE}
         ]
-
+        
         query_data = {
-            "prompt_parts": ["query with dynamic settings"],
+            "prompt_parts": ["query with dynamic settings"], 
             "generation_config_override": dynamic_gen_config,
             "safety_settings_override": dynamic_safety_settings
         }
@@ -226,23 +226,23 @@ class TestGeminiAgent(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("Prompt blocked by Gemini due to SAFETY", result["message"])
         self.agent.logger.warning.assert_any_call("Gemini prompt blocked due to: SAFETY")
-
+        
     def test_process_query_content_blocked_in_candidate(self):
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(side_effect=ValueError("Content blocked")) # .text raises ValueError if blocked
         mock_response.parts = [] # No parts if content is blocked
-        mock_response.prompt_feedback = None
-
+        mock_response.prompt_feedback = None 
+        
         mock_candidate = MagicMock()
         mock_candidate.finish_reason = MagicMock(name="SAFETY") # Not "STOP"
         mock_candidate.safety_ratings = [MagicMock(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, probability="HIGH")]
         mock_response.candidates = [mock_candidate]
-
+        
         self.mock_generative_model_instance.generate_content.return_value = mock_response
 
         query_data = {"prompt_parts": ["a query that generates a blocked response"]}
         result = self.agent.process_query(query_data)
-
+        
         self.assertEqual(result["status"], "error")
         self.assertIn("Content generation issue: Content blocked", result["message"])
         self.assertIn("Candidate finish reason: SAFETY", result["details"])

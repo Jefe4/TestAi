@@ -55,7 +55,7 @@ class TestClaudeAgent(unittest.TestCase):
             "usage": {"input_tokens": 10, "output_tokens": 20}
         }
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         query_data = {"prompt": "test query"}
         result = self.agent.process_query(query_data)
 
@@ -64,7 +64,7 @@ class TestClaudeAgent(unittest.TestCase):
         self.assertEqual(call_args[1]['service_name'], 'claude')
         self.assertEqual(call_args[1]['endpoint'], 'messages')
         self.assertEqual(call_args[1]['method'], 'POST')
-
+        
         actual_payload = call_args[1]['data']
         self.assertEqual(actual_payload['model'], self.agent_config['model'])
         self.assertEqual(len(actual_payload['messages']), 1)
@@ -75,7 +75,7 @@ class TestClaudeAgent(unittest.TestCase):
         self.assertEqual(actual_payload['temperature'], self.agent_config['temperature'])
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_text,
             "finish_reason": "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 20}
@@ -87,14 +87,14 @@ class TestClaudeAgent(unittest.TestCase):
         mock_response_text = "System-guided response"
         mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "end_turn"}
         self.mock_api_manager.set_make_request_response(mock_api_response)
-
+        
         system_instructions = "System instructions for Claude"
         query_data = {"prompt": "test query with system prompt", "system_prompt": system_instructions}
         result = self.agent.process_query(query_data)
 
         self.mock_api_manager.make_request.assert_called_once()
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
-
+        
         self.assertIn("system", actual_payload)
         self.assertEqual(actual_payload["system"], system_instructions)
         self.assertEqual(actual_payload['messages'][0]['content'], query_data["prompt"])
@@ -110,7 +110,7 @@ class TestClaudeAgent(unittest.TestCase):
 
         query_data = {"prompt": "test query for API error"}
         result = self.agent.process_query(query_data)
-
+        
         self.mock_api_manager.make_request.assert_called_once()
         expected_result = {
             "status": "error",
@@ -123,7 +123,7 @@ class TestClaudeAgent(unittest.TestCase):
     def test_process_query_missing_prompt(self):
         query_data = {} # Empty query_data
         result = self.agent.process_query(query_data)
-
+        
         expected_result = {"status": "error", "message": "User prompt missing"}
         self.assertEqual(result, expected_result)
         self.mock_api_manager.make_request.assert_not_called()
@@ -131,7 +131,7 @@ class TestClaudeAgent(unittest.TestCase):
 
     def test_process_query_with_config_overrides(self):
         # Agent initialized with model="claude-test-model", temp=0.5, max_tokens=1000 in setUp
-
+        
         mock_response_text = "Custom config response"
         mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "max_tokens"}
         self.mock_api_manager.set_make_request_response(mock_api_response)
@@ -152,7 +152,7 @@ class TestClaudeAgent(unittest.TestCase):
         self.assertNotIn("system", actual_payload) # Default system prompt from config should be used if not overridden
 
         expected_result = {
-            "status": "success",
+            "status": "success", 
             "content": mock_response_text,
             "finish_reason": "max_tokens",
             "usage": None

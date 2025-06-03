@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 # Adjust import path based on test execution context
 try:
     from src.coordinator.routing_engine import RoutingEngine
-    from src.agents.base_agent import BaseAgent
+    from src.agents.base_agent import BaseAgent 
 except ImportError:
     import sys
     import os
@@ -29,13 +29,13 @@ class TestRoutingEngine(unittest.TestCase):
 
         self.mock_agent_a = MagicMock(spec=BaseAgent)
         self.mock_agent_a.get_name.return_value = "AgentA"
-
+        
         self.mock_agent_b = MagicMock(spec=BaseAgent)
         self.mock_agent_b.get_name.return_value = "AgentB"
-
+        
         self.mock_agent_c = MagicMock(spec=BaseAgent)
         self.mock_agent_c.get_name.return_value = "AgentC"
-
+        
         self.available_agents = {
             "AgentA": self.mock_agent_a,
             "AgentB": self.mock_agent_b,
@@ -51,8 +51,8 @@ class TestRoutingEngine(unittest.TestCase):
         self.assertIsNotNone(self.engine_fb_enabled.logger)
         self.mock_get_logger.assert_any_call("RoutingEngine")
         self.mock_logger_instance.info.assert_any_call(f"RoutingEngine initialized with config: {self.default_config}")
-        self.mock_logger_instance.reset_mock()
-
+        self.mock_logger_instance.reset_mock() 
+        
         self.assertEqual(self.engine_fb_disabled.config, self.no_fallback_config)
         self.assertIsNotNone(self.engine_fb_disabled.logger)
         self.mock_logger_instance.info.assert_any_call(f"RoutingEngine initialized with config: {self.no_fallback_config}")
@@ -62,7 +62,7 @@ class TestRoutingEngine(unittest.TestCase):
         analysis = {"execution_plan": ["AgentA", "AgentC"], "query_type": "plan_type"}
         # Using engine_fb_disabled to ensure fallback isn't a factor if plan logic fails
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 2)
         self.assertEqual(selected[0], self.mock_agent_a) # Order matters
         self.assertEqual(selected[1], self.mock_agent_c)
@@ -73,7 +73,7 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_invalid_agent_in_execution_plan_returns_empty(self):
         analysis = {"execution_plan": ["AgentA", "AgentX"], "query_type": "plan_type_fail"} # AgentX not available
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 0)
         self.mock_logger_instance.warning.assert_any_call(
             "Agent 'AgentX' from execution_plan not found in available_agents. Plan is invalid."
@@ -85,7 +85,7 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_empty_execution_plan_uses_suggestion_logic(self):
         analysis = {"execution_plan": [], "suggested_agents": ["AgentB"], "query_type": "empty_plan_type"}
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents) # Fallback disabled
-
+        
         self.assertEqual(len(selected), 1)
         self.assertIn(self.mock_agent_b, selected)
         self.mock_logger_instance.info.assert_any_call(
@@ -98,7 +98,7 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_no_execution_plan_key_uses_suggestion_logic(self):
         analysis = {"suggested_agents": ["AgentC"], "query_type": "no_plan_key_type"} # No 'execution_plan' key
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents) # Fallback disabled
-
+        
         self.assertEqual(len(selected), 1)
         self.assertIn(self.mock_agent_c, selected)
         self.mock_logger_instance.info.assert_any_call(
@@ -109,7 +109,7 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_uses_analyzers_suggestions_if_no_plan(self):
         analysis = {"suggested_agents": ["AgentB"], "execution_plan": None, "query_type": "specific_type"}
         selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 1)
         self.assertIn(self.mock_agent_b, selected)
         self.mock_logger_instance.info.assert_any_call(
@@ -120,9 +120,9 @@ class TestRoutingEngine(unittest.TestCase):
 
 
     def test_select_agents_analyzers_suggestions_unavailable_triggers_fallback_when_enabled_if_no_plan(self):
-        analysis = {"suggested_agents": ["AgentX"], "execution_plan": None, "query_type": "type_x"}
+        analysis = {"suggested_agents": ["AgentX"], "execution_plan": None, "query_type": "type_x"} 
         selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].get_name(), "AgentA") # Fallback to first
         self.mock_logger_instance.warning.assert_any_call(
@@ -139,7 +139,7 @@ class TestRoutingEngine(unittest.TestCase):
         self.mock_logger_instance.reset_mock()
         analysis = {"suggested_agents": ["AgentX"], "execution_plan": None, "query_type": "type_x"}
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 0)
         self.mock_logger_instance.error.assert_any_call(
             "Routing engine could not select any agent. No plan, no valid suggestions, and fallback (if any) yielded no agent."
@@ -148,9 +148,9 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_analyzer_returns_empty_suggestions_triggers_fallback_when_enabled_if_no_plan(self):
         analysis = {"suggested_agents": [], "execution_plan": None, "query_type": "unknown_type"}
         selected = self.engine_fb_enabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0].get_name(), "AgentA")
+        self.assertEqual(selected[0].get_name(), "AgentA") 
         self.mock_logger_instance.info.assert_any_call(
             f"Fallback enabled: Selected first available agent: 'AgentA'."
         )
@@ -159,7 +159,7 @@ class TestRoutingEngine(unittest.TestCase):
         self.mock_logger_instance.reset_mock()
         analysis = {"suggested_agents": [], "execution_plan": None, "query_type": "unknown_type"}
         selected = self.engine_fb_disabled.select_agents(analysis, self.available_agents)
-
+        
         self.assertEqual(len(selected), 0)
         self.mock_logger_instance.error.assert_any_call(
              "Routing engine could not select any agent. No plan, no valid suggestions, and fallback (if any) yielded no agent."
@@ -182,7 +182,7 @@ class TestRoutingEngine(unittest.TestCase):
     def test_select_agents_missing_suggestion_and_plan_keys_uses_fallback_when_enabled(self):
         analysis_missing_keys = {"query_type": "missing_all_guidance"}
         selected = self.engine_fb_enabled.select_agents(analysis_missing_keys, self.available_agents)
-
+        
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].get_name(), "AgentA")
         self.mock_logger_instance.info.assert_any_call("TaskAnalyzer provided no specific agent suggestions (and no execution plan).")

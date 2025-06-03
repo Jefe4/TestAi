@@ -63,7 +63,7 @@ def get_logger(name: Optional[str] = None, level: int = DEFAULT_LOG_LEVEL, log_f
     logger.setLevel(level)
     for handler in logger.handlers:
         handler.setLevel(level)
-
+            
     return logger
 
 if __name__ == '__main__':

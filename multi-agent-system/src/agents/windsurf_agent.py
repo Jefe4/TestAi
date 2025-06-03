@@ -36,11 +36,11 @@ class WindsurfAgent(BaseAgent):
         """
         super().__init__(agent_name, config)
         self.api_manager = api_manager
-
+        
         self.focus_area = self.config.get("focus", "web-development") # e.g., "web-development", "css-architecture", "react"
         self.model = self.config.get("model", "windsurf-latest") # Hypothetical model name
         self.default_system_prompt = self.config.get(
-            "default_system_prompt",
+            "default_system_prompt", 
             "You are a web development expert. Provide solutions and best practices for frontend frameworks, CSS, and modern web practices."
         )
         self.logger.info(f"WindsurfAgent '{self.agent_name}' initialized with focus '{self.focus_area}' and model '{self.model}'.")
@@ -77,7 +77,7 @@ class WindsurfAgent(BaseAgent):
 
         system_prompt_override = query_data.get("system_prompt")
         system_prompt_to_use = system_prompt_override if system_prompt_override is not None else self.default_system_prompt
-
+        
         current_focus = query_data.get("focus", self.focus_area)
 
         self.logger.info(f"Processing query for WindsurfAgent '{self.agent_name}' (focus: {current_focus}) with query: '{user_query[:100]}...'")
@@ -91,10 +91,10 @@ class WindsurfAgent(BaseAgent):
         payload: Dict[str, Any] = {
             "prompt": full_prompt,
             "model": self.model, # If Windsurf API uses model selection
-            "focus": current_focus,
+            "focus": current_focus, 
             "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 2000)),
         }
-
+        
         if self.config.get("temperature") is not None:
             payload["temperature"] = self.config.get("temperature")
         if query_data.get("temperature_override") is not None:
@@ -112,7 +112,7 @@ class WindsurfAgent(BaseAgent):
         # Make the API call. Endpoint 'generate' or similar.
         # The service name 'windsurf' must be configured in APIManager.
         response_data = self.api_manager.make_request(
-            service_name='windsurf',
+            service_name='windsurf', 
             endpoint='generate', # Hypothetical endpoint, e.g., /v1/generate
             method="POST",
             data=payload
@@ -140,9 +140,9 @@ class WindsurfAgent(BaseAgent):
             return {
                 "status": "success",
                 "content": extracted_content,
-                "raw_response": response_data
+                "raw_response": response_data 
             }
-        except Exception as e:
+        except Exception as e: 
             self.logger.error(f"Error parsing Windsurf response: {e}. Response data: {response_data}")
             return {"status": "error", "message": f"Error parsing Windsurf response: {e}"}
 
@@ -170,7 +170,7 @@ if __name__ == '__main__':
                     response_text += "\n```css\n/* Sample generated CSS */\nbody { font-family: 'Arial', sans-serif; }\n```"
                 elif focus == "react":
                      response_text += "\n```jsx\n// Sample generated React component\nconst MyComponent = () => <div>Hello Windsurf!</div>;\nexport default MyComponent;\n```"
-
+                
                 return {
                     "id": "wind_xxxxxxxxxxxxxxxxx",
                     "response": response_text, # Main field
@@ -182,7 +182,7 @@ if __name__ == '__main__':
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
     print("--- Testing WindsurfAgent ---")
-
+    
     dummy_api_manager = DummyAPIManager()
     agent_config = {
         "model": "windsurf-expert-v2",
@@ -191,7 +191,7 @@ if __name__ == '__main__':
         "temperature": 0.4,
         "default_system_prompt": "You are a Windsurf AI, expert in all things web."
     }
-
+    
     windsurf_agent = WindsurfAgent(
         agent_name="TestWindsurfAgent001",
         api_manager=dummy_api_manager, # type: ignore
@@ -231,10 +231,10 @@ if __name__ == '__main__':
     print(f"Response 3: {response3}\n")
     assert response3["status"] == "error"
     assert response3["message"] == "User query/prompt missing"
-
+    
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
-    query4_data = {"prompt": "This prompt will cause an error in Windsurf."}
+    query4_data = {"prompt": "This prompt will cause an error in Windsurf."} 
     response4 = windsurf_agent.process_query(query4_data)
     print(f"Response 4: {response4}\n")
     assert response4["status"] == "error"

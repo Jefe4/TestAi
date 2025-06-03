@@ -35,9 +35,9 @@ class ClaudeAgent(BaseAgent):
         """
         super().__init__(agent_name, config)
         self.api_manager = api_manager
-
+        
         # Default model if not specified in config
-        self.model = self.config.get("model", "claude-3-5-sonnet-20240620")
+        self.model = self.config.get("model", "claude-3-5-sonnet-20240620") 
         self.logger.info(f"ClaudeAgent '{self.agent_name}' initialized with model '{self.model}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
@@ -47,7 +47,7 @@ class ClaudeAgent(BaseAgent):
         return {
             "description": "Agent for general analysis, content creation, and conversational AI using Claude.",
             "capabilities": ["text_generation", "summarization", "q&a", "general_analysis", "document_processing"],
-            "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"]
+            "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"] 
         }
 
     def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,7 +82,7 @@ class ClaudeAgent(BaseAgent):
         self.logger.info(f"Processing query for ClaudeAgent '{self.agent_name}' with prompt: '{user_prompt[:100]}...'")
 
         messages = [{"role": "user", "content": user_prompt}]
-
+        
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -95,7 +95,7 @@ class ClaudeAgent(BaseAgent):
 
         if system_prompt_to_use: # Only add system prompt to payload if it's not empty or None
             payload["system"] = system_prompt_to_use
-
+        
         self.logger.debug(f"Claude API payload: {payload}")
 
         # Make the API call via APIManager
@@ -127,7 +127,7 @@ class ClaudeAgent(BaseAgent):
             for block in response_data["content"]:
                 if block.get("type") == "text":
                     extracted_text += block.get("text", "")
-
+            
             if not extracted_text: # If loop finishes and text is still empty
                 self.logger.error(f"No text found in Claude response content blocks. Response: {response_data}")
                 return {"status": "error", "message": "No text content found in Claude response."}
@@ -166,7 +166,7 @@ if __name__ == '__main__':
                 response_text = f"This is a simulated Claude response to: '{data['messages'][0]['content']}' with model {data.get('model')}."
                 if data.get("system"):
                     response_text += f" System prompt was: '{data['system']}'."
-
+                
                 return {
                     "id": "msg_xxxxxxxxxxxxxxxxx",
                     "type": "message",
@@ -188,16 +188,16 @@ if __name__ == '__main__':
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
     print("--- Testing ClaudeAgent ---")
-
+    
     dummy_api_manager = DummyAPIManager()
     agent_config = {
         "model": "claude-3-opus-test",
         "max_tokens": 150, # Claude API might use max_tokens_to_sample
-        "max_tokens_to_sample": 150,
+        "max_tokens_to_sample": 150, 
         "temperature": 0.6,
         "default_system_prompt": "You are a specialized Claude test assistant."
     }
-
+    
     claude_agent = ClaudeAgent(
         agent_name="TestClaudeAgent001",
         api_manager=dummy_api_manager, # type: ignore
@@ -237,7 +237,7 @@ if __name__ == '__main__':
     print(f"Response 3: {response3}")
     assert response3["status"] == "error"
     assert response3["message"] == "User prompt missing"
-
+    
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error."} # DummyAPIManager will simulate error
@@ -250,7 +250,7 @@ if __name__ == '__main__':
     print("\n--- Test Case 5: Empty String System Prompt ---")
     query5_data = {
         "prompt": "What is the weather like today?",
-        "system_prompt": ""
+        "system_prompt": "" 
     }
     response5 = claude_agent.process_query(query5_data)
     print(f"Response 5: {response5}")

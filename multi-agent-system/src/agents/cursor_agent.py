@@ -32,16 +32,16 @@ class CursorAgent(BaseAgent):
             agent_name: The name of the agent.
             api_manager: An instance of APIManager to handle API calls.
             config: Optional configuration dictionary for the agent.
-                    Expected keys: "mode", "default_system_prompt", "model" (optional),
+                    Expected keys: "mode", "default_system_prompt", "model" (optional), 
                                    "max_tokens", "temperature".
         """
         super().__init__(agent_name, config)
         self.api_manager = api_manager
-
+        
         self.model_mode = self.config.get("mode", "code-generation") # e.g., "code-generation", "edit-code", "chat"
         self.model = self.config.get("model", "cursor-default") # Hypothetical model name
         self.default_system_prompt = self.config.get(
-            "default_system_prompt",
+            "default_system_prompt", 
             "You are an AI programming assistant. Follow the user's requirements carefully and to the letter."
         )
         self.logger.info(f"CursorAgent '{self.agent_name}' initialized with mode '{self.model_mode}' and model '{self.model}'.")
@@ -78,7 +78,7 @@ class CursorAgent(BaseAgent):
 
         system_prompt_override = query_data.get("system_prompt")
         system_prompt_to_use = system_prompt_override if system_prompt_override is not None else self.default_system_prompt
-
+        
         current_mode = query_data.get("mode", self.model_mode)
 
         self.logger.info(f"Processing query for CursorAgent '{self.agent_name}' (mode: {current_mode}) with query: '{user_query[:100]}...'")
@@ -93,7 +93,7 @@ class CursorAgent(BaseAgent):
         # ]
         # payload["messages"] = messages
         # For now, using a single "prompt" field with combined text:
-
+        
         # If the API is more like OpenAI/Claude with a messages structure:
         # messages = [{"role": "system", "content": system_prompt_to_use}, {"role": "user", "content": user_query}]
         # payload = {"messages": messages, "model": self.model, ...}
@@ -107,10 +107,10 @@ class CursorAgent(BaseAgent):
         payload: Dict[str, Any] = {
             "prompt": full_prompt, # This is based on the subtask's structure.
             "model": self.model, # Model to use, if applicable to Cursor API
-            "mode": current_mode,
+            "mode": current_mode, 
             "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 2048)),
         }
-
+        
         if self.config.get("temperature") is not None:
             payload["temperature"] = self.config.get("temperature")
         if query_data.get("temperature_override") is not None: # Allow query-time override
@@ -128,7 +128,7 @@ class CursorAgent(BaseAgent):
         # Make the API call via APIManager. Endpoint 'compose' or similar.
         # The service name 'cursor' must be configured in APIManager.
         response_data = self.api_manager.make_request(
-            service_name='cursor',
+            service_name='cursor', 
             endpoint='compose', # Hypothetical endpoint, e.g., /v1/compose
             method="POST",
             data=payload
@@ -187,7 +187,7 @@ if __name__ == '__main__':
                     response_text += "\n```python\n# Sample generated code\nprint('Hello from Cursor!')\n```"
                 elif mode == "edit-code":
                      response_text += "\n```python\n# Original code would be here, with edits applied\nprint('Hello from edited Cursor code!')\n```"
-
+                
                 return {
                     "id": "curs_xxxxxxxxxxxxxxxxx",
                     "response": response_text, # Main field for generated content
@@ -198,7 +198,7 @@ if __name__ == '__main__':
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
     print("--- Testing CursorAgent ---")
-
+    
     dummy_api_manager = DummyAPIManager()
     agent_config = {
         "model": "cursor-test-model",
@@ -207,7 +207,7 @@ if __name__ == '__main__':
         "temperature": 0.2,
         "default_system_prompt": "You are an expert Cursor AI. Generate precise code."
     }
-
+    
     cursor_agent = CursorAgent(
         agent_name="TestCursorAgent001",
         api_manager=dummy_api_manager, # type: ignore
@@ -247,7 +247,7 @@ if __name__ == '__main__':
     print(f"Response 3: {response3}\n")
     assert response3["status"] == "error"
     assert response3["message"] == "User query/prompt missing"
-
+    
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error."} # DummyAPIManager will simulate error

@@ -118,7 +118,7 @@ class GeminiAgent(BaseAgent):
             "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro"] 
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
         """
         Processes a query using the Gemini API.
 
@@ -159,8 +159,8 @@ class GeminiAgent(BaseAgent):
             current_gen_config = generation_config_override if generation_config_override else self.model.generation_config
             current_safety_settings = safety_settings_override if safety_settings_override else self.model.safety_settings
             
-            # The SDK's generate_content method takes generation_config and safety_settings directly.
-            response = self.model.generate_content(
+            # Use generate_content_async for asynchronous operation
+            response = await self.model.generate_content_async( # Await the async call
                 contents=user_prompt_parts, # type: ignore
                 generation_config=current_gen_config, # type: ignore
                 safety_settings=current_safety_settings # type: ignore

@@ -55,7 +55,7 @@ class WindsurfAgent(BaseAgent):
             "focus_areas_supported": ["general_web_dev", "react", "vue", "angular", "css_grid_flexbox", "web_performance"] # Example focus areas
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
         """
         Processes a query using the (hypothetical) Windsurf API.
 
@@ -111,7 +111,7 @@ class WindsurfAgent(BaseAgent):
 
         # Make the API call. Endpoint 'generate' or similar.
         # The service name 'windsurf' must be configured in APIManager.
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Await the call
             service_name='windsurf', 
             endpoint='generate', # Hypothetical endpoint, e.g., /v1/generate
             method="POST",

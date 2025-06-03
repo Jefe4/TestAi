@@ -56,7 +56,7 @@ class CursorAgent(BaseAgent):
             "modes_supported": ["code-generation", "edit-code", "chat"] # Example modes
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
         """
         Processes a query using the (hypothetical) Cursor API.
 
@@ -127,7 +127,7 @@ class CursorAgent(BaseAgent):
 
         # Make the API call via APIManager. Endpoint 'compose' or similar.
         # The service name 'cursor' must be configured in APIManager.
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Await the call
             service_name='cursor', 
             endpoint='compose', # Hypothetical endpoint, e.g., /v1/compose
             method="POST",

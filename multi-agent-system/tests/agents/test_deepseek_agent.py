@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock 
+from unittest.mock import MagicMock, AsyncMock # Added AsyncMock
 
 # Assuming tests are run from the 'multi-agent-system' directory root,
 # or 'multi-agent-system/src' is in PYTHONPATH.
@@ -17,9 +17,9 @@ except ImportError:
     from tests.mocks.mock_api_manager import MockAPIManager
 
 
-class TestDeepSeekAgent(unittest.TestCase):
+class TestDeepSeekAgent(unittest.IsolatedAsyncioTestCase): # Changed inheritance
     def setUp(self):
-        self.mock_api_manager = MockAPIManager()
+        self.mock_api_manager = MockAPIManager() # MockAPIManager.make_request is now AsyncMock
         self.agent_config = {
             "model": "deepseek-test-model",
             "default_system_prompt": "You are a general test DeepSeek model.",
@@ -48,20 +48,21 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertTrue(len(caps["capabilities"]) > 0)
         self.assertIn("text_generation", caps["capabilities"])
 
-    def test_process_query_success(self):
+    async def test_process_query_success(self): # Changed to async
         mock_response_content = "Test response from DeepSeek"
         mock_api_response = {
             "choices": [{"message": {"content": mock_response_content}}],
             "usage": {"total_tokens": 10, "prompt_tokens": 5, "completion_tokens": 5},
             "id": "chatcmpl-xxxxx",
-            "finish_reason": "stop" # Added based on DeepSeekAgent's parsing
+            "finish_reason": "stop" 
         }
-        self.mock_api_manager.set_make_request_response(mock_api_response)
+        # MockAPIManager.make_request is AsyncMock, set_make_request_response configures its return_value
+        self.mock_api_manager.set_make_request_response(mock_api_response) 
         
         query_data = {"prompt": "test query"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await the call
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Use assert_awaited_once
         call_args = self.mock_api_manager.make_request.call_args
         self.assertEqual(call_args[1]['service_name'], 'deepseek')
         self.assertEqual(call_args[1]['endpoint'], 'chat/completions')
@@ -86,17 +87,16 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertEqual(result, expected_result)
         self.agent.logger.info.assert_any_call(f"Successfully received and parsed response from DeepSeek for prompt: '{query_data['prompt'][:100]}...'")
 
-    def test_process_query_api_error(self):
+    async def test_process_query_api_error(self): # Changed to async
         error_message = "DeepSeek API unavailable"
-        # This mock APIManager returns a dict that looks like an error from the APIManager itself
         self.mock_api_manager.set_make_request_response(
             response_data={"error": "APIError", "message": error_message, "status_code": 503}
-        ) # No is_error=True, as this is the structure APIManager returns
+        )
 
         query_data = {"prompt": "test query for API error"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await the call
         
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Use assert_awaited_once
         expected_result = {
             "status": "error",
             "message": f"API request failed: {error_message}",
@@ -105,16 +105,16 @@ class TestDeepSeekAgent(unittest.TestCase):
         self.assertEqual(result, expected_result)
         self.agent.logger.error.assert_any_call(f"API request failed for DeepSeek: {error_message}")
 
-    def test_process_query_missing_prompt(self):
-        query_data = {} # Empty query_data, no prompt
-        result = self.agent.process_query(query_data)
+    async def test_process_query_missing_prompt(self): # Changed to async
+        query_data = {} 
+        result = await self.agent.process_query(query_data) # Await the call
         
         expected_result = {"status": "error", "message": "User prompt missing"}
         self.assertEqual(result, expected_result)
-        self.mock_api_manager.make_request.assert_not_called()
+        self.mock_api_manager.make_request.assert_not_called() # Remains assert_not_called
         self.agent.logger.error.assert_any_call("User prompt is missing in query_data.")
 
-    def test_process_query_with_custom_system_prompt_and_config_overrides(self):
+    async def test_process_query_with_custom_system_prompt_and_config_overrides(self): # Changed to async
         # Re-init agent with more specific config for this test, or modify existing one
         # For this test, we'll rely on setUp's agent but override via query_data
         custom_config = {
@@ -134,12 +134,12 @@ class TestDeepSeekAgent(unittest.TestCase):
         query_data = {
             "prompt": "custom test query", 
             "system_prompt": "Override system info for this query.",
-            "temperature": 0.88, # Query-time override for temperature
-            "max_tokens": 55    # Query-time override for max_tokens
+            "temperature": 0.88, 
+            "max_tokens": 55    
         }
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await the call
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Use assert_awaited_once
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
 
         self.assertEqual(actual_payload['model'], self.agent_config['model']) # Model comes from agent's init config
@@ -158,15 +158,14 @@ class TestDeepSeekAgent(unittest.TestCase):
         }
         self.assertEqual(result, expected_result)
 
-    def test_process_query_invalid_api_response_structure(self):
-        # Simulate an API response that is successful (e.g. 200 OK) but has an unexpected structure
-        malformed_api_response = {"unexpected_field": "some_data"} # Missing 'choices'
+    async def test_process_query_invalid_api_response_structure(self): # Changed to async
+        malformed_api_response = {"unexpected_field": "some_data"} 
         self.mock_api_manager.set_make_request_response(malformed_api_response)
 
         query_data = {"prompt": "test query for malformed response"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await the call
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Use assert_awaited_once
         self.assertEqual(result["status"], "error")
         self.assertIn("Invalid response structure from DeepSeek API", result["message"])
         self.agent.logger.error.assert_any_call(f"Failed to extract content from DeepSeek response. Response: {malformed_api_response}")

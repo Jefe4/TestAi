@@ -53,7 +53,7 @@ class DeepSeekAgent(BaseAgent):
             "models_supported": ["deepseek-coder", "deepseek-llm"] # Example, can be dynamic
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
         """
         Processes a query using the DeepSeek API.
 
@@ -95,7 +95,7 @@ class DeepSeekAgent(BaseAgent):
         # Make the API call via APIManager
         # Assuming 'deepseek' is a configured service in APIManager
         # and 'chat/completions' is the correct endpoint.
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Await the call
             service_name='deepseek',
             endpoint='chat/completions',
             method="POST",

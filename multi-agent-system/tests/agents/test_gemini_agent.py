@@ -1,6 +1,6 @@
 import unittest
 import os
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock, PropertyMock, AsyncMock # Added AsyncMock
 
 # Attempt to import google.generativeai.types for type hinting and constants in tests
 # The actual 'genai' module used by the agent will be mocked.
@@ -36,7 +36,7 @@ except ImportError:
     from src.utils.api_manager import APIManager
 
 
-class TestGeminiAgent(unittest.TestCase):
+class TestGeminiAgent(unittest.IsolatedAsyncioTestCase): # Changed inheritance
     def setUp(self):
         self.agent_config = {
             "api_key": "TEST_GEMINI_KEY",
@@ -53,6 +53,8 @@ class TestGeminiAgent(unittest.TestCase):
         
         # Mock the GenerativeModel class and its instance
         self.mock_generative_model_instance = MagicMock()
+        # Key change: mock the async method specifically
+        self.mock_generative_model_instance.generate_content_async = AsyncMock() 
         self.mock_genai_module.GenerativeModel.return_value = self.mock_generative_model_instance
         
         # Mock the configure function
@@ -131,22 +133,21 @@ class TestGeminiAgent(unittest.TestCase):
         self.assertIn("capabilities", caps)
         self.assertIsInstance(caps["capabilities"], list)
 
-    def test_process_query_success(self):
+    async def test_process_query_success(self): # Async
         mock_response = MagicMock()
-        # Use PropertyMock for attributes that are properties
         type(mock_response).text = PropertyMock(return_value="Test response from Gemini")
         mock_response.parts = [MagicMock(text="Test response from Gemini")]
-        mock_response.prompt_feedback = None # Simulate no blocking
+        mock_response.prompt_feedback = None 
         mock_response.candidates = [MagicMock(finish_reason=MagicMock(name="STOP"), safety_ratings=[])]
-        self.mock_generative_model_instance.generate_content.return_value = mock_response
+        self.mock_generative_model_instance.generate_content_async.return_value = mock_response # Use async mock
         
         query_data = {"prompt_parts": ["test gemini query"]}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_generative_model_instance.generate_content.assert_called_once_with(
+        self.mock_generative_model_instance.generate_content_async.assert_awaited_once_with( # Awaited
             contents=query_data["prompt_parts"],
-            generation_config=self.agent.generation_config, # type: ignore
-            safety_settings=self.agent.safety_settings # type: ignore
+            generation_config=self.agent.generation_config, 
+            safety_settings=self.agent.safety_settings 
         )
         
         expected_result_subset = {
@@ -157,38 +158,38 @@ class TestGeminiAgent(unittest.TestCase):
         self.assertDictContainsSubset(expected_result_subset, result)
         self.agent.logger.info.assert_any_call("Successfully received response from Gemini.")
 
-    def test_process_query_sdk_error(self):
-        self.mock_generative_model_instance.generate_content.side_effect = Exception("Gemini SDK Internal Error")
+    async def test_process_query_sdk_error(self): # Async
+        self.mock_generative_model_instance.generate_content_async.side_effect = Exception("Gemini SDK Internal Error") # Use async mock
         
         query_data = {"prompt_parts": ["test query for SDK error"]}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
         
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["message"], "Gemini SDK Internal Error")
         self.agent.logger.error.assert_any_call("Gemini API call failed: Exception - Gemini SDK Internal Error")
 
-    def test_process_query_missing_prompt_parts(self):
-        result_empty = self.agent.process_query({})
+    async def test_process_query_missing_prompt_parts(self): # Async
+        result_empty = await self.agent.process_query({}) # Await
         self.assertEqual(result_empty["status"], "error")
         self.assertIn("Valid 'prompt_parts' (list) missing or empty", result_empty["message"])
         
-        result_none = self.agent.process_query({"prompt_parts": None})
+        result_none = await self.agent.process_query({"prompt_parts": None}) # Await
         self.assertEqual(result_none["status"], "error")
         self.assertIn("Valid 'prompt_parts' (list) missing or empty", result_none["message"])
 
-        result_empty_list = self.agent.process_query({"prompt_parts": []})
+        result_empty_list = await self.agent.process_query({"prompt_parts": []}) # Await
         self.assertEqual(result_empty_list["status"], "error")
         self.assertIn("Valid 'prompt_parts' (list) missing or empty", result_empty_list["message"])
 
-        self.mock_generative_model_instance.generate_content.assert_not_called()
+        self.mock_generative_model_instance.generate_content_async.assert_not_called() # Use async mock
 
-    def test_process_query_with_dynamic_gen_config_and_safety(self):
+    async def test_process_query_with_dynamic_gen_config_and_safety(self): # Async
         mock_response = MagicMock()
         type(mock_response).text = PropertyMock(return_value="Dynamic config response")
         mock_response.parts = [MagicMock(text="Dynamic config response")]
         mock_response.prompt_feedback = None
         mock_response.candidates = [MagicMock(finish_reason=MagicMock(name="STOP"), safety_ratings=[])]
-        self.mock_generative_model_instance.generate_content.return_value = mock_response
+        self.mock_generative_model_instance.generate_content_async.return_value = mock_response # Use async mock
 
         dynamic_gen_config = {"temperature": 0.1, "max_output_tokens": 50}
         dynamic_safety_settings = [
@@ -200,48 +201,45 @@ class TestGeminiAgent(unittest.TestCase):
             "generation_config_override": dynamic_gen_config,
             "safety_settings_override": dynamic_safety_settings
         }
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_generative_model_instance.generate_content.assert_called_once_with(
+        self.mock_generative_model_instance.generate_content_async.assert_awaited_once_with( # Awaited
             contents=query_data["prompt_parts"],
-            generation_config=dynamic_gen_config, # type: ignore
-            safety_settings=dynamic_safety_settings # type: ignore
+            generation_config=dynamic_gen_config, 
+            safety_settings=dynamic_safety_settings 
         )
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["content"], "Dynamic config response")
 
-    def test_process_query_prompt_blocked(self):
+    async def test_process_query_prompt_blocked(self): # Async
         mock_response = MagicMock()
         mock_feedback = MagicMock()
-        mock_feedback.block_reason = "SAFETY" # Or "OTHER"
-        mock_feedback.block_reason_message = "Prompt blocked due to safety concerns." # Not a real field, but for testing
+        mock_feedback.block_reason = "SAFETY"
         type(mock_response).prompt_feedback = PropertyMock(return_value=mock_feedback)
-        # If prompt is blocked, generate_content might raise, or return response with feedback set.
-        # Let's assume it returns the response object with prompt_feedback set.
-        self.mock_generative_model_instance.generate_content.return_value = mock_response
+        self.mock_generative_model_instance.generate_content_async.return_value = mock_response # Use async mock
 
         query_data = {"prompt_parts": ["a problematic prompt"]}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
         self.assertEqual(result["status"], "error")
         self.assertIn("Prompt blocked by Gemini due to SAFETY", result["message"])
         self.agent.logger.warning.assert_any_call("Gemini prompt blocked due to: SAFETY")
         
-    def test_process_query_content_blocked_in_candidate(self):
+    async def test_process_query_content_blocked_in_candidate(self): # Async
         mock_response = MagicMock()
-        type(mock_response).text = PropertyMock(side_effect=ValueError("Content blocked")) # .text raises ValueError if blocked
-        mock_response.parts = [] # No parts if content is blocked
+        type(mock_response).text = PropertyMock(side_effect=ValueError("Content blocked")) 
+        mock_response.parts = [] 
         mock_response.prompt_feedback = None 
         
         mock_candidate = MagicMock()
-        mock_candidate.finish_reason = MagicMock(name="SAFETY") # Not "STOP"
+        mock_candidate.finish_reason = MagicMock(name="SAFETY") 
         mock_candidate.safety_ratings = [MagicMock(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, probability="HIGH")]
         mock_response.candidates = [mock_candidate]
         
-        self.mock_generative_model_instance.generate_content.return_value = mock_response
+        self.mock_generative_model_instance.generate_content_async.return_value = mock_response # Use async mock
 
         query_data = {"prompt_parts": ["a query that generates a blocked response"]}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
         
         self.assertEqual(result["status"], "error")
         self.assertIn("Content generation issue: Content blocked", result["message"])

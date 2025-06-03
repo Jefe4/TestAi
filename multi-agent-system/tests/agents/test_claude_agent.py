@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock # Added AsyncMock
 
 # Assuming tests are run from the 'multi-agent-system' directory root
 try:
@@ -15,9 +15,9 @@ except ImportError:
     from src.agents.claude_agent import ClaudeAgent
     from tests.mocks.mock_api_manager import MockAPIManager
 
-class TestClaudeAgent(unittest.TestCase):
+class TestClaudeAgent(unittest.IsolatedAsyncioTestCase): # Changed inheritance
     def setUp(self):
-        self.mock_api_manager = MockAPIManager()
+        self.mock_api_manager = MockAPIManager() # MockAPIManager.make_request is now AsyncMock
         self.agent_config = {
             "model": "claude-test-model",
             "default_system_prompt": "You are a general test Claude model.",
@@ -83,16 +83,16 @@ class TestClaudeAgent(unittest.TestCase):
         self.assertEqual(result, expected_result)
         self.agent.logger.info.assert_any_call(f"Successfully received and parsed response from Claude for prompt: '{query_data['prompt'][:100]}...'")
 
-    def test_process_query_success_with_system_prompt(self):
+    async def test_process_query_success_with_system_prompt(self): # Async
         mock_response_text = "System-guided response"
-        mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "end_turn"}
+        mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "end_turn", "usage": None}
         self.mock_api_manager.set_make_request_response(mock_api_response)
         
         system_instructions = "System instructions for Claude"
         query_data = {"prompt": "test query with system prompt", "system_prompt": system_instructions}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Awaited
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
         
         self.assertIn("system", actual_payload)
@@ -102,16 +102,16 @@ class TestClaudeAgent(unittest.TestCase):
         expected_result = {"status": "success", "content": mock_response_text, "finish_reason": "end_turn", "usage": None}
         self.assertEqual(result, expected_result)
 
-    def test_process_query_api_error(self):
+    async def test_process_query_api_error(self): # Async
         error_message = "Claude API unavailable"
         self.mock_api_manager.set_make_request_response(
             response_data={"error": "APIError", "message": error_message, "status_code": 503}
         )
 
         query_data = {"prompt": "test query for API error"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
         
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Awaited
         expected_result = {
             "status": "error",
             "message": f"API request failed: {error_message}",
@@ -120,36 +120,36 @@ class TestClaudeAgent(unittest.TestCase):
         self.assertEqual(result, expected_result)
         self.agent.logger.error.assert_any_call(f"API request failed for Claude: {error_message}")
 
-    def test_process_query_missing_prompt(self):
-        query_data = {} # Empty query_data
-        result = self.agent.process_query(query_data)
+    async def test_process_query_missing_prompt(self): # Async
+        query_data = {} 
+        result = await self.agent.process_query(query_data) # Await
         
         expected_result = {"status": "error", "message": "User prompt missing"}
         self.assertEqual(result, expected_result)
         self.mock_api_manager.make_request.assert_not_called()
         self.agent.logger.error.assert_any_call("User prompt is missing in query_data.")
 
-    def test_process_query_with_config_overrides(self):
+    async def test_process_query_with_config_overrides(self): # Async
         # Agent initialized with model="claude-test-model", temp=0.5, max_tokens=1000 in setUp
         
         mock_response_text = "Custom config response"
-        mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "max_tokens"}
+        mock_api_response = {"content": [{"type": "text", "text": mock_response_text}], "stop_reason": "max_tokens", "usage": None}
         self.mock_api_manager.set_make_request_response(mock_api_response)
 
         query_data = {
             "prompt": "custom config test query",
-            "temperature": 0.99, # Query-time override
-            "max_tokens": 150     # Query-time override (Claude agent maps this to max_tokens_to_sample)
+            "temperature": 0.99, 
+            "max_tokens": 150     
         }
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Awaited
         actual_payload = self.mock_api_manager.make_request.call_args[1]['data']
 
         self.assertEqual(actual_payload['model'], self.agent_config['model']) # Model from agent's init config
-        self.assertEqual(actual_payload['temperature'], 0.99) # Overridden by query_data
-        self.assertEqual(actual_payload['max_tokens'], 150)    # Overridden by query_data (used as max_tokens_to_sample)
-        self.assertNotIn("system", actual_payload) # Default system prompt from config should be used if not overridden
+        self.assertEqual(actual_payload['temperature'], 0.99) 
+        self.assertEqual(actual_payload['max_tokens'], 150)    
+        self.assertNotIn("system", actual_payload) 
 
         expected_result = {
             "status": "success", 
@@ -159,26 +159,26 @@ class TestClaudeAgent(unittest.TestCase):
         }
         self.assertEqual(result, expected_result)
 
-    def test_process_query_invalid_api_response_structure_no_content_list(self):
-        malformed_api_response = {"text_instead_of_content_list": "some_data"} # Missing 'content' list
+    async def test_process_query_invalid_api_response_structure_no_content_list(self): # Async
+        malformed_api_response = {"text_instead_of_content_list": "some_data"} 
         self.mock_api_manager.set_make_request_response(malformed_api_response)
 
         query_data = {"prompt": "test query for malformed response"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Awaited
         self.assertEqual(result["status"], "error")
         self.assertIn("Invalid response structure from Claude API (no content)", result["message"])
         self.agent.logger.error.assert_any_call(f"Unexpected response structure from Claude (no content list). Response: {malformed_api_response}")
 
-    def test_process_query_invalid_api_response_structure_no_text_in_content(self):
-        malformed_api_response = {"content": [{"type": "not_text", "data": "something"}]} # No 'text' field in content block
+    async def test_process_query_invalid_api_response_structure_no_text_in_content(self): # Async
+        malformed_api_response = {"content": [{"type": "not_text", "data": "something"}]} 
         self.mock_api_manager.set_make_request_response(malformed_api_response)
 
         query_data = {"prompt": "test query for malformed content block"}
-        result = self.agent.process_query(query_data)
+        result = await self.agent.process_query(query_data) # Await
 
-        self.mock_api_manager.make_request.assert_called_once()
+        self.mock_api_manager.make_request.assert_awaited_once() # Awaited
         self.assertEqual(result["status"], "error")
         self.assertIn("No text content found in Claude response", result["message"])
         self.agent.logger.error.assert_any_call(f"No text found in Claude response content blocks. Response: {malformed_api_response}")

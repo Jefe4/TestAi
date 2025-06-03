@@ -1,0 +1,19 @@
+aiohttp>=3.8.0,<4.0.0
+google-generativeai>=0.5.0,<0.6.0 # Added in a previous step for GeminiAgent
+PyYAML>=6.0,<7.0 # Should be present for APIManager config loading
+requests>=2.20,<3.0.0 # Although being replaced by aiohttp in APIManager, other parts might use it, or it's a common dev dep.
+# Keeping existing dependencies is safer. GeminiAgent uses google.generativeai.
+# PyYAML is used by APIManager.load_service_configs.
+# requests was used by APIManager previously.
+# For now, ensure aiohttp is added. If other deps were implicitly assumed, they should be listed.
+# Based on previous agent implementations, google-generativeai is needed.
+# Based on APIManager's config loading, PyYAML is needed.
+# `requests` might have been used by a hypothetical agent or was the previous APIManager backend.
+# Let's ensure the critical ones are present.
+# The GeminiAgent explicitly imports `google.generativeai`.
+# The APIManager explicitly imports `yaml` (implying PyYAML).
+# The previous APIManager used `requests`. It's safer to keep it for now if other code might still depend on it,
+# or if any agent implementation (not directly modified here) might be using it.
+# However, the goal is to make APIManager async, so new direct uses of requests by APIManager are removed.
+# For a clean refactor, if no other component uses `requests`, it could be removed, but that's outside this scope.
+# Sticking to adding aiohttp and ensuring existing *explicit* dependencies are listed.

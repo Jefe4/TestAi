@@ -50,7 +50,7 @@ class ClaudeAgent(BaseAgent):
             "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"] 
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
         """
         Processes a query using the Claude API.
 
@@ -100,7 +100,7 @@ class ClaudeAgent(BaseAgent):
 
         # Make the API call via APIManager
         # Endpoint for Claude messages API is typically /v1/messages
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Await the call
             service_name='claude',
             endpoint='messages', # APIManager will prepend base_url (e.g., https://api.anthropic.com/v1)
             method="POST",

@@ -33,7 +33,7 @@ class BaseAgent(ABC):
 
 
     @abstractmethod
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
         """
         Processes a given query data using the agent's capabilities and returns a response.
         This method must be implemented by all specialized agent subclasses.

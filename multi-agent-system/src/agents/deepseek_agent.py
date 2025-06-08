@@ -1,6 +1,7 @@
 # src/agents/deepseek_agent.py
 """Specialized agent for interacting with DeepSeek AI models."""
 
+import asyncio # Added
 from typing import Dict, Any, Optional
 
 try:
@@ -12,6 +13,7 @@ except ImportError:
     # For instance, if you run `python deepseek_agent.py` directly from the agents directory.
     import sys
     import os
+    import asyncio # Added for fallback scenario
     # Add project root to sys.path to allow for absolute imports
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
@@ -53,7 +55,7 @@ class DeepSeekAgent(BaseAgent):
             "models_supported": ["deepseek-coder", "deepseek-llm"] # Example, can be dynamic
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
         """
         Processes a query using the DeepSeek API.
 
@@ -95,7 +97,7 @@ class DeepSeekAgent(BaseAgent):
         # Make the API call via APIManager
         # Assuming 'deepseek' is a configured service in APIManager
         # and 'chat/completions' is the correct endpoint.
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Changed to await
             service_name='deepseek',
             endpoint='chat/completions',
             method="POST",
@@ -155,9 +157,10 @@ if __name__ == '__main__':
             }
 
 
-        def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        async def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
             self.logger.info(f"DummyAPIManager received request for {service_name} -> {endpoint} with method {method}.")
             self.logger.debug(f"Request data: {data}")
+            # Simulate async behavior if needed: await asyncio.sleep(0.01)
             if service_name == "deepseek" and endpoint == "chat/completions":
                 # Simulate a successful DeepSeek API response
                 if "error" in data.get("messages")[1].get("content","").lower(): # Simulate error
@@ -186,6 +189,7 @@ if __name__ == '__main__':
                 }
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
+async def main_deepseek_test(): # Wrapped in async main function
     print("--- Testing DeepSeekAgent ---")
     
     # Initialize dummy components
@@ -210,7 +214,7 @@ if __name__ == '__main__':
     # Test case 1: Simple query
     print("\n--- Test Case 1: Simple Query ---")
     query1_data = {"prompt": "What is the capital of France?"}
-    response1 = deepseek_agent.process_query(query1_data)
+    response1 = await deepseek_agent.process_query(query1_data) # Awaited
     print(f"Response 1: {response1}")
     assert response1["status"] == "success"
     assert "Paris" in response1.get("content", "") or "simulated response" in response1.get("content", "")
@@ -223,7 +227,7 @@ if __name__ == '__main__':
         "temperature": 0.7, # Test query-time override
         "max_tokens": 50 # Test query-time override
     }
-    response2 = deepseek_agent.process_query(query2_data)
+    response2 = await deepseek_agent.process_query(query2_data) # Awaited
     print(f"Response 2: {response2}")
     assert response2["status"] == "success"
     assert "def add_numbers" in response2.get("content", "") or "simulated response" in response2.get("content", "")
@@ -231,7 +235,7 @@ if __name__ == '__main__':
     # Test case 3: Missing prompt
     print("\n--- Test Case 3: Missing Prompt ---")
     query3_data = {} # No prompt
-    response3 = deepseek_agent.process_query(query3_data)
+    response3 = await deepseek_agent.process_query(query3_data) # Awaited
     print(f"Response 3: {response3}")
     assert response3["status"] == "error"
     assert response3["message"] == "User prompt missing"
@@ -239,7 +243,7 @@ if __name__ == '__main__':
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error."} # DummyAPIManager will simulate error
-    response4 = deepseek_agent.process_query(query4_data)
+    response4 = await deepseek_agent.process_query(query4_data) # Awaited
     print(f"Response 4: {response4}")
     assert response4["status"] == "error"
     assert "Simulated API Error" in response4.get("message", "")
@@ -247,3 +251,17 @@ if __name__ == '__main__':
     print("\n--- DeepSeekAgent testing completed. ---")
     print("Note: The fallback import mechanism for BaseAgent/APIManager is primarily for isolated testing of this script.")
     print("In the full system, these should be resolved by Python's package structure.")
+
+if __name__ == '__main__':
+    # This block is for basic demonstration and testing.
+    # It requires APIManager and BaseAgent to be correctly set up.
+
+    # Setup a dummy APIManager and logger for local testing
+    # In a real application, these would be part of the main system.
+    from src.utils.logger import get_logger as setup_logger # type: ignore
+    # import asyncio # Added at the top
+
+    if os.name == 'nt': # Optional: Windows specific policy for asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    asyncio.run(main_deepseek_test())

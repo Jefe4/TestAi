@@ -542,11 +542,17 @@ if __name__ == '__main__':
                 response2 = await coordinator.process_query(query2)
                 print(f"Response 2: {response2}")
 
-                # Example for a plan that might be parallel (if TaskAnalyzer is configured for it)
-                # query_market = "concurrent market and competitor analysis for new EV startup"
-                # print(f"\nProcessing query (market): '{query_market}'")
-                # response_market = await coordinator.process_query(query_market)
-                # print(f"Response (market): {response_market}")
+                # Query for a sequential plan (example assumes TaskAnalyzer is set up to create one for such a query)
+                query_sequential = "summarize critique and list keywords for this document about AI ethics."
+                print(f"\nProcessing sequential plan query: '{query_sequential}'")
+                response_sequential = await coordinator.process_query(query_sequential)
+                print(f"Response (sequential): {response_sequential}")
+
+                # Query for a parallel plan (uncommented and activated)
+                query_market = "concurrent market and competitor analysis for new EV startup"
+                print(f"\nProcessing parallel plan query (market): '{query_market}'")
+                response_market = await coordinator.process_query(query_market)
+                print(f"Response (market): {response_market}")
 
             if os.name == 'nt': # Windows patch for asyncio if needed for basic demo run
                  asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

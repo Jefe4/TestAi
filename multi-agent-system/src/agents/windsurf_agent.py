@@ -1,6 +1,7 @@
 # src/agents/windsurf_agent.py
 """Specialized agent for interacting with a hypothetical Windsurf AI, focusing on web development."""
 
+import asyncio # Added
 from typing import Dict, Any, Optional
 
 try:
@@ -10,6 +11,7 @@ except ImportError:
     # Fallback for direct script execution or import issues
     import sys
     import os
+    import asyncio # Added for fallback scenario
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -55,7 +57,7 @@ class WindsurfAgent(BaseAgent):
             "focus_areas_supported": ["general_web_dev", "react", "vue", "angular", "css_grid_flexbox", "web_performance"] # Example focus areas
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
         """
         Processes a query using the (hypothetical) Windsurf API.
 
@@ -111,7 +113,7 @@ class WindsurfAgent(BaseAgent):
 
         # Make the API call. Endpoint 'generate' or similar.
         # The service name 'windsurf' must be configured in APIManager.
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Changed to await
             service_name='windsurf', 
             endpoint='generate', # Hypothetical endpoint, e.g., /v1/generate
             method="POST",
@@ -156,9 +158,10 @@ if __name__ == '__main__':
                 "windsurf": {"api_key": "dummy_windsurf_key", "base_url": "https://api.windsurf.ai/v1"}
             }
 
-        def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        async def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
             self.logger.info(f"DummyAPIManager received request for {service_name} -> {endpoint} with method {method}.")
             self.logger.debug(f"Request data: {data}")
+            # Simulate async behavior: await asyncio.sleep(0.01)
             if service_name == "windsurf" and endpoint == "generate":
                 if "error" in data.get("prompt","").lower(): # Simple error simulation
                      return {"error": "Simulated API Error", "message": "The prompt contained 'error'", "status_code": 400}
@@ -181,6 +184,7 @@ if __name__ == '__main__':
                 }
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
+async def main_windsurf_test(): # Wrapped in async main function
     print("--- Testing WindsurfAgent ---")
     
     dummy_api_manager = DummyAPIManager()
@@ -205,7 +209,7 @@ if __name__ == '__main__':
     # Test case 1: Web development query
     print("\n--- Test Case 1: Web Development Query ---")
     query1_data = {"prompt": "What are the best practices for responsive web design?"}
-    response1 = windsurf_agent.process_query(query1_data)
+    response1 = await windsurf_agent.process_query(query1_data) # Awaited
     print(f"Response 1:\n{response1.get('content')}\n")
     assert response1["status"] == "success"
     assert "responsive web design" in response1.get("content", "") or "simulated Windsurf AI response" in response1.get("content", "")
@@ -218,7 +222,7 @@ if __name__ == '__main__':
         "system_prompt": custom_sys_prompt,
         "focus": "css-styling" # Override agent's default focus
     }
-    response2 = windsurf_agent.process_query(query2_data)
+    response2 = await windsurf_agent.process_query(query2_data) # Awaited
     print(f"Response 2:\n{response2.get('content')}\n")
     assert response2["status"] == "success"
     assert "css-styling" in response2.get("raw_response",{}).get("focus_applied","") # Check if focus was applied by dummy
@@ -227,7 +231,7 @@ if __name__ == '__main__':
     # Test case 3: Missing prompt
     print("\n--- Test Case 3: Missing Prompt ---")
     query3_data = {} # No prompt
-    response3 = windsurf_agent.process_query(query3_data)
+    response3 = await windsurf_agent.process_query(query3_data) # Awaited
     print(f"Response 3: {response3}\n")
     assert response3["status"] == "error"
     assert response3["message"] == "User query/prompt missing"
@@ -235,7 +239,7 @@ if __name__ == '__main__':
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error in Windsurf."} 
-    response4 = windsurf_agent.process_query(query4_data)
+    response4 = await windsurf_agent.process_query(query4_data) # Awaited
     print(f"Response 4: {response4}\n")
     assert response4["status"] == "error"
     assert "Simulated API Error" in response4.get("message", "")
@@ -243,3 +247,12 @@ if __name__ == '__main__':
     print("\n--- WindsurfAgent testing completed. ---")
     print("Note: This agent's implementation is based on a hypothetical Windsurf AI API.")
     print("API interaction details will likely need adjustments for a real API.")
+
+if __name__ == '__main__':
+    from src.utils.logger import get_logger as setup_logger # type: ignore
+    # import asyncio # Added at the top
+
+    if os.name == 'nt': # Optional: Windows specific policy for asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    asyncio.run(main_windsurf_test())

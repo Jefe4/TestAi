@@ -1,6 +1,7 @@
 # src/agents/claude_agent.py
 """Specialized agent for interacting with Anthropic's Claude AI models."""
 
+import asyncio # Added
 from typing import Dict, Any, Optional
 
 try:
@@ -11,6 +12,7 @@ except ImportError:
     # Fallback for direct script execution or import issues
     import sys
     import os
+    import asyncio # Added for fallback scenario as well
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -50,7 +52,7 @@ class ClaudeAgent(BaseAgent):
             "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"] 
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
         """
         Processes a query using the Claude API.
 
@@ -100,7 +102,7 @@ class ClaudeAgent(BaseAgent):
 
         # Make the API call via APIManager
         # Endpoint for Claude messages API is typically /v1/messages
-        response_data = self.api_manager.make_request(
+        response_data = await self.api_manager.make_request( # Changed to await
             service_name='claude',
             endpoint='messages', # APIManager will prepend base_url (e.g., https://api.anthropic.com/v1)
             method="POST",
@@ -156,9 +158,10 @@ if __name__ == '__main__':
                 }
             }
 
-        def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        async def make_request(self, service_name: str, endpoint: str, method: str, data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async
             self.logger.info(f"DummyAPIManager received request for {service_name} -> {endpoint} with method {method}.")
             self.logger.debug(f"Request data: {data}")
+            # Simulate some async behavior if needed, e.g., await asyncio.sleep(0.01)
             if service_name == "claude" and endpoint == "messages":
                 if "error" in data.get("messages")[0].get("content","").lower(): # Simulate error
                      return {"error": "Simulated API Error", "message": "The prompt contained 'error'", "status_code": 400}
@@ -187,6 +190,7 @@ if __name__ == '__main__':
                 }
             return {"error": "Unknown service or endpoint in DummyAPIManager", "status_code": 404}
 
+async def main_claude_test(): # Wrapped in async main function
     print("--- Testing ClaudeAgent ---")
     
     dummy_api_manager = DummyAPIManager()
@@ -211,7 +215,7 @@ if __name__ == '__main__':
     # Test case 1: Simple query using default system prompt
     print("\n--- Test Case 1: Simple Query (Default System Prompt) ---")
     query1_data = {"prompt": "Explain black holes in simple terms."}
-    response1 = claude_agent.process_query(query1_data)
+    response1 = await claude_agent.process_query(query1_data) # Awaited
     print(f"Response 1: {response1}")
     assert response1["status"] == "success"
     assert "simulated Claude response" in response1.get("content", "")
@@ -225,7 +229,7 @@ if __name__ == '__main__':
         "prompt": "Tell me about Julius Caesar.",
         "system_prompt": custom_sys_prompt
     }
-    response2 = claude_agent.process_query(query2_data)
+    response2 = await claude_agent.process_query(query2_data) # Awaited
     print(f"Response 2: {response2}")
     assert response2["status"] == "success"
     assert custom_sys_prompt in response2.get("content", "")
@@ -233,7 +237,7 @@ if __name__ == '__main__':
     # Test case 3: Missing prompt
     print("\n--- Test Case 3: Missing Prompt ---")
     query3_data = {} # No prompt
-    response3 = claude_agent.process_query(query3_data)
+    response3 = await claude_agent.process_query(query3_data) # Awaited
     print(f"Response 3: {response3}")
     assert response3["status"] == "error"
     assert response3["message"] == "User prompt missing"
@@ -241,7 +245,7 @@ if __name__ == '__main__':
     # Test case 4: API Error simulation
     print("\n--- Test Case 4: API Error ---")
     query4_data = {"prompt": "This prompt will cause an error."} # DummyAPIManager will simulate error
-    response4 = claude_agent.process_query(query4_data)
+    response4 = await claude_agent.process_query(query4_data) # Awaited
     print(f"Response 4: {response4}")
     assert response4["status"] == "error"
     assert "Simulated API Error" in response4.get("message", "")
@@ -252,7 +256,7 @@ if __name__ == '__main__':
         "prompt": "What is the weather like today?",
         "system_prompt": "" 
     }
-    response5 = claude_agent.process_query(query5_data)
+    response5 = await claude_agent.process_query(query5_data) # Awaited
     print(f"Response 5: {response5}")
     assert response5["status"] == "success"
     assert agent_config["default_system_prompt"] not in response5.get("content", "") # Ensure default was NOT used
@@ -261,3 +265,14 @@ if __name__ == '__main__':
     print("\n--- ClaudeAgent testing completed. ---")
     print("Note: The fallback import mechanism is primarily for isolated testing.")
     print("In the full system, imports should be resolved by Python's package structure.")
+
+if __name__ == '__main__':
+    from src.utils.logger import get_logger as setup_logger # type: ignore
+    # Ensure asyncio is imported, typically at the top of the file.
+    # import asyncio # Already added at the top
+
+    # Optional: Windows specific policy for asyncio if needed for tests
+    if os.name == 'nt':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    asyncio.run(main_claude_test())

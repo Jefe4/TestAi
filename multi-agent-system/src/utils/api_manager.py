@@ -15,7 +15,7 @@ import json
 import yaml
 import httpx
 import asyncio
-from typing import Dict, Optional, Any # Standard typing modules
+from typing import Dict, Optional, Any, List # Standard typing modules, Added List
 
 try:
     from ..utils.logger import get_logger # For structured logging
@@ -310,6 +310,139 @@ class APIManager:
         # A full implementation would involve coordination to pause future requests to this service.
         # For now, this method only logs warnings.
 
+    def _convert_messages_to_gemini_contents(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """
+        Converts a list of messages (common format: {"role": ..., "content": ...})
+        to Gemini's "contents" format ({"role": ..., "parts": [{"text": ...}]}).
+
+        System messages are ignored here as they are handled by `systemInstruction` in Gemini API.
+        Unknown roles default to "user".
+        """
+        contents = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if role.lower() == "system":
+                self.logger.debug("System message in `messages` list ignored during Gemini contents conversion. Use 'system_prompt' kwarg for Gemini's systemInstruction.")
+                continue # Skip system messages for the 'contents' array
+
+            # Adapt role if needed, Gemini typically uses 'user' and 'model'
+            # The Gemini API requires alternating user and model roles.
+            # This basic conversion assumes the input `messages` list might not strictly adhere to this
+            # for all models, but for a direct call to Gemini, the caller should ideally ensure this.
+            # For simplicity, we map 'assistant' or other non-user roles to 'model'.
+            # A more robust solution might validate/enforce alternating roles if strictly for Gemini.
+            gemini_role = "user" if role.lower() == "user" else "model"
+
+            contents.append({
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            })
+        return contents
+
+    async def call_llm_service(
+        self,
+        service_name: str,
+        model_name: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        temperature: float = 0.3,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        """
+        Provides a simplified interface for making chat/completion calls to common LLM services.
+
+        This method abstracts the service-specific payload construction.
+
+        Args:
+            service_name: The name of the LLM service (e.g., "claude", "gemini", "deepseek").
+            model_name: The specific model to use for the service.
+            messages: A list of message dictionaries (e.g., [{"role": "user", "content": "Hello"}]).
+                      The structure should be adaptable to the target service's requirements.
+                      For Gemini, this will be converted to its 'contents' format.
+            max_tokens: The maximum number of tokens to generate in the response.
+            temperature: The sampling temperature for generation (0.0 to 1.0+).
+            **kwargs: Additional keyword arguments specific to the LLM service.
+                      For "claude", can include "system_prompt".
+                      For "gemini", can include "system_prompt", "top_p", "top_k".
+
+        Returns:
+            A dictionary containing the response from the LLM service, typically including
+            status, content, and any error information.
+        """
+        self.logger.info(f"call_llm_service invoked for service: {service_name}, model: {model_name}")
+
+        endpoint = ""
+        payload = {}
+        method = "POST" # Common for chat/completion LLMs
+
+        if service_name == "claude":
+            endpoint = "messages"
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if "system_prompt" in kwargs:
+                payload["system"] = kwargs.pop("system_prompt")
+            payload.update(kwargs) # Add any other remaining kwargs
+
+        elif service_name == "gemini":
+            # Note: This uses the REST API for Gemini, not the Python SDK directly here.
+            # APIManager is generally for HTTP REST calls.
+            # Gemini SDK calls are usually made directly from the GeminiAgent.
+            endpoint = f"models/{model_name}:generateContent" # Check Gemini REST API docs for exact endpoint
+
+            gemini_contents = self._convert_messages_to_gemini_contents(messages)
+            if not gemini_contents and any(msg.get("role", "").lower() != "system" for msg in messages):
+                self.logger.error(f"For Gemini, 'messages' resulted in empty 'contents' after filtering system prompts. Original messages: {messages}")
+                return {"status": "error", "message": "Gemini 'contents' cannot be empty. Provide user/model messages."}
+
+            payload = {
+                "contents": gemini_contents,
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens,
+                    "topP": kwargs.pop("top_p", 1.0),
+                    "topK": kwargs.pop("top_k", None), # top_k often optional
+                },
+            }
+            if kwargs.get("system_prompt"):
+                payload["systemInstruction"] = {"parts": [{"text": kwargs.pop("system_prompt")}]}
+
+            # Remove None values from generationConfig as Gemini API might not like nulls for optional fields
+            payload["generationConfig"] = {k: v for k, v in payload["generationConfig"].items() if v is not None}
+            payload.update(kwargs)
+
+
+        elif service_name == "deepseek":
+            endpoint = "chat/completions"
+            payload = {
+                "model": model_name,
+                "messages": messages, # DeepSeek uses OpenAI-like message format
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            payload.update(kwargs)
+
+        else:
+            self.logger.error(f"LLM service '{service_name}' is not recognized by call_llm_service.")
+            return {"status": "error", "message": f"Service '{service_name}' not supported by call_llm_service."}
+
+        if not endpoint: # Should be caught by the else above, but as a safeguard
+            self.logger.error(f"Endpoint not defined for LLM service '{service_name}'.")
+            return {"status": "error", "message": f"Endpoint configuration missing for service '{service_name}'."}
+
+        return await self.make_request(
+            service_name=service_name,
+            endpoint=endpoint,
+            method=method,
+            data=payload
+        )
+
+
 if __name__ == '__main__':
     # This is for basic demonstration and testing of the APIManager
     # Ensure that a dummy `agent_configs.yaml` can be created in `src/config/`
@@ -441,7 +574,74 @@ if __name__ == '__main__':
         # Standard asyncio setup
         if os.name == 'nt': # Optional: Windows specific policy for asyncio if needed
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        asyncio.run(main_test())
+
+        # Add tests for call_llm_service
+        async def run_all_tests():
+            await main_test() # Run existing tests
+
+            print("\n--- Testing call_llm_service ---")
+            messages_example = [{"role": "user", "content": "Hello, what is your name?"}]
+
+            # Mock the make_request for these tests if not using real keys or if DummyAPIManager needs extension
+            original_make_request = manager.make_request
+
+            async def mock_llm_make_request(service_name, endpoint, method, data, **kwargs):
+                print(f"Mocked make_request for call_llm_service: {service_name}, {endpoint}, DATA: {data}")
+                if service_name == "claude" and endpoint == "messages":
+                    return {"status": "success", "content": [{"type": "text", "text": f"Mock Claude response to: {data['messages'][0]['content']}"}]}
+                if service_name == "gemini" and endpoint.startswith("models/") and endpoint.endswith(":generateContent"):
+                     # Gemini's actual response is more complex, this is simplified
+                    return {"status": "success", "candidates": [{"content": {"parts": [{"text": f"Mock Gemini response to: {data['contents'][0]['parts'][0]['text']}"}]}}]}
+                if service_name == "deepseek" and endpoint == "chat/completions":
+                    return {"status": "success", "choices": [{"message": {"content": f"Mock DeepSeek response to: {data['messages'][0]['content']}"}}]}
+                return {"status": "error", "message": f"Service {service_name} endpoint {endpoint} not mocked for call_llm_service test"}
+
+            manager.make_request = mock_llm_make_request
+
+            if "claude" not in manager.service_configs: manager.service_configs["claude"] = {"api_key":"dummy", "base_url":"dummy"}
+            llm_response_claude = await manager.call_llm_service(
+                service_name="claude", model_name="claude-test-model",
+                messages=messages_example, max_tokens=50, system_prompt="You are a helpful assistant."
+            )
+            print(f"  LLM Service Response (Claude via mock): {llm_response_claude}")
+
+            if "gemini" not in manager.service_configs: manager.service_configs["gemini"] = {"api_key":"dummy", "base_url":"dummy"}
+            gemini_messages_example = [{"role": "user", "content": "Write a short poem about AI."}]
+            llm_response_gemini = await manager.call_llm_service(
+                service_name="gemini", model_name="gemini-test-model",
+                messages=gemini_messages_example, max_tokens=60, system_prompt="You are a poetic AI."
+            )
+            print(f"  LLM Service Response (Gemini via mock): {llm_response_gemini}")
+
+            # Test Gemini with a system message in the list (should be ignored by _convert_messages_to_gemini_contents)
+            gemini_messages_with_system = [
+                {"role": "system", "content": "This should be ignored."},
+                {"role": "user", "content": "Tell me a joke."}
+            ]
+            llm_response_gemini_sys = await manager.call_llm_service(
+                service_name="gemini", model_name="gemini-test-model",
+                messages=gemini_messages_with_system, max_tokens=60
+            )
+            print(f"  LLM Service Response (Gemini with system message in list via mock): {llm_response_gemini_sys}")
+
+
+            if "deepseek" not in manager.service_configs: manager.service_configs["deepseek"] = {"api_key":"dummy", "base_url":"dummy"}
+            llm_response_deepseek = await manager.call_llm_service(
+                service_name="deepseek", model_name="deepseek-test-model",
+                messages=messages_example, max_tokens=50
+            )
+            print(f"  LLM Service Response (DeepSeek via mock): {llm_response_deepseek}")
+
+            # Test unsupported service
+            llm_response_unknown = await manager.call_llm_service(
+                service_name="unknown_llm", model_name="unknown_model",
+                messages=messages_example, max_tokens=50
+            )
+            print(f"  LLM Service Response (Unknown via mock): {llm_response_unknown}")
+
+            manager.make_request = original_make_request # Restore original make_request
+
+        asyncio.run(run_all_tests()) # Run all tests including new ones
 
         print("\n--- APIManager basic testing done. ---")
     # These prints are outside the if __name__ == '__main__' guard, which is unusual.

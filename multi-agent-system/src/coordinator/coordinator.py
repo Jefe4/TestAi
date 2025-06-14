@@ -11,7 +11,7 @@ data flow between them. It also uses an AdvancedContextManager to trace
 execution steps.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, TYPE_CHECKING # Added Callable, TYPE_CHECKING
 import os 
 import re 
 import asyncio
@@ -32,6 +32,8 @@ try:
     from ..agents.gemini_agent import GeminiAgent
     from ..utils.helpers import get_nested_value
     from ..utils.context_manager import AdvancedContextManager
+    from ..utils.jefe_datatypes import JefeContext # Added
+    # from ..agents.jefe_agent import JefeAgent # This will be in TYPE_CHECKING
 except ImportError:
     # Fallback for environments where relative imports might fail (e.g., direct script execution).
     # This adds the project root to sys.path to help resolve modules.
@@ -52,6 +54,11 @@ except ImportError:
     from src.agents.gemini_agent import GeminiAgent # type: ignore
     from src.utils.helpers import get_nested_value # type: ignore
     from src.utils.context_manager import AdvancedContextManager # type: ignore
+    from src.utils.jefe_datatypes import JefeContext # type: ignore # Added for fallback
+    # from src.agents.jefe_agent import JefeAgent # type: ignore # For fallback, in TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..agents.jefe_agent import JefeAgent
 
 
 class Coordinator:
@@ -85,24 +92,30 @@ class Coordinator:
         self.context_manager = AdvancedContextManager(api_manager=self.api_manager) # For tracing execution
 
         self.agents: Dict[str, BaseAgent] = {} # Dictionary to store instantiated agent objects
+        self.realtime_processors: Dict[str, Callable] = {} # For specialized real-time input processors like JefeAgent
+        self.jefe_agent: Optional['JefeAgent'] = None # Specifically store JefeAgent if registered
+
         # Mapping of agent type names (from config) to their respective classes
         self.agent_classes: Dict[str, type[BaseAgent]] = {
             "deepseek": DeepSeekAgent, "claude": ClaudeAgent,
             "cursor": CursorAgent, "windsurf": WindsurfAgent,
             "gemini": GeminiAgent,
-            # Add new agent types here
+            # "jefe": JefeAgent, # JefeAgent is registered differently via register_jefe_agent
         }
 
         self._instantiate_agents() # Load and initialize agents based on configuration
 
         if self.agents:
-            self.logger.info(f"Coordinator initialized successfully with agents: {', '.join(self.agents.keys())}")
+            self.logger.info(f"Coordinator initialized successfully with general agents: {', '.join(self.agents.keys())}")
         else:
-            self.logger.warning("Coordinator initialized, but no agents were instantiated. Check configurations.")
+            self.logger.warning("Coordinator initialized, but no general agents were instantiated. Check configurations.")
+        if self.jefe_agent:
+            self.logger.info(f"JefeAgent '{self.jefe_agent.get_name()}' is also registered.")
+
 
     def register_agent(self, agent_instance: BaseAgent):
         """
-        Registers an agent instance with the Coordinator.
+        Registers a general agent instance with the Coordinator.
 
         Args:
             agent_instance: An instance of a class derived from BaseAgent.
@@ -620,7 +633,7 @@ class Coordinator:
                 if query_data_overrides: effective_configs.update(query_data_overrides.copy())
                 if step_detail.get("agent_config_overrides"): effective_configs.update(step_detail["agent_config_overrides"])
                 for key_to_remove in agent_inputs.keys(): effective_configs.pop(key_to_remove, None) # Inputs take precedence
-                
+
                 # Handle system_prompt specifically: overrides > step_config > analysis_result (for first step)
                 if "system_prompt" in effective_configs:
                     agent_query_data["system_prompt"] = effective_configs.pop("system_prompt")
@@ -769,54 +782,256 @@ class Coordinator:
         self.context_manager.add_trace_event("final_response_generated", {"final_response": final_response if final_response is not None else {}})
         return final_response if final_response is not None else {"status": "error", "message": "Processing resulted in no final response."}
 
+    # --- New methods for JefeAgent and real-time processing ---
+
+    def register_realtime_processor(self, name: str, processor_func: Callable):
+        """
+        Registers a function capable of handling real-time context processing.
+        Currently primarily used for JefeAgent.
+
+        Args:
+            name: A name for the real-time processor (e.g., "jefe_realtime").
+            processor_func: The async function to call for processing real-time input.
+                            Expected signature: `async def func(jefe_context: JefeContext) -> Dict[str, Any]`
+        """
+        if name in self.realtime_processors:
+            self.logger.warning(f"Real-time processor '{name}' already registered. Overwriting.")
+        self.realtime_processors[name] = processor_func
+        self.logger.info(f"Real-time processor '{name}' registered.")
+
+    def register_jefe_agent(self, jefe_agent_instance: 'JefeAgent'):
+        """
+        Registers a specific JefeAgent instance.
+
+        This also registers its `process_realtime_input` method as the default
+        real-time processor if no other is set.
+
+        Args:
+            jefe_agent_instance: An instance of JefeAgent.
+        """
+        self.register_agent(jefe_agent_instance) # Register as a general agent too
+        self.jefe_agent = jefe_agent_instance
+        # Register JefeAgent's main real-time processing method
+        if "jefe_realtime_processor" not in self.realtime_processors: # Avoid overwriting if manually set
+            self.register_realtime_processor(
+                "jefe_realtime_processor",
+                jefe_agent_instance.process_realtime_input
+            )
+        self.logger.info(f"JefeAgent '{jefe_agent_instance.get_name()}' specifically registered. Its real-time processor is now active.")
+
+
+    async def process_realtime_input(self, context_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Processes real-time contextual input using the registered JefeAgent.
+
+        Args:
+            context_data: A dictionary containing data to construct a JefeContext.
+                          Expected keys match JefeContext fields (e.g., "screen_content",
+                          "audio_transcript", "current_ide", "programming_language", etc.).
+
+        Returns:
+            A dictionary containing the response from the JefeAgent, or an error message.
+        """
+        self.logger.info(f"Received real-time input for processing: {str(context_data)[:200]}...")
+        self.context_manager.clear_trace() # Start fresh trace for this input
+        self.context_manager.add_trace_event("realtime_input_received", {"context_data": context_data})
+
+        if not self.jefe_agent:
+            self.logger.error("JefeAgent not registered. Cannot process real-time input.")
+            self.context_manager.add_trace_event("realtime_processing_error", {"message": "JefeAgent not registered."})
+            return {"status": "error", "message": "JefeAgent not available."}
+
+        try:
+            # Construct JefeContext, providing defaults for optional fields if not in context_data
+            jefe_context = JefeContext(
+                screen_content=context_data.get("screen_content", ""),
+                audio_transcript=context_data.get("audio_transcript", ""),
+                current_ide=context_data.get("current_ide"),
+                programming_language=context_data.get("programming_language"),
+                project_type=context_data.get("project_type"),
+                error_messages=context_data.get("error_messages", []),
+                previous_suggestions=context_data.get("previous_suggestions", [])
+            )
+
+            # Use the registered real-time processor, which should be JefeAgent's method
+            processor_func = self.realtime_processors.get("jefe_realtime_processor")
+            if not processor_func: # Should not happen if register_jefe_agent was called
+                 self.logger.error("No 'jefe_realtime_processor' registered despite JefeAgent being present.")
+                 return {"status": "error", "message": "Jefe real-time processor misconfiguration."}
+
+            response = await processor_func(jefe_context)
+            self.context_manager.add_trace_event("realtime_processing_complete", {"response": response})
+            return response
+        except Exception as e:
+            self.logger.error(f"Error during real-time input processing with JefeAgent: {e}", exc_info=True)
+            self.context_manager.add_trace_event("realtime_processing_exception", {"error": str(e)})
+            return {"status": "error", "message": f"Exception during real-time processing: {str(e)}"}
+
+    def should_use_realtime_processing(self, input_data: Dict[str, Any]) -> bool:
+        """
+        Determines if the input data suggests a real-time processing flow (JefeAgent)
+        versus a standard query processing flow.
+
+        Args:
+            input_data: The input data dictionary.
+
+        Returns:
+            True if real-time processing should be used, False otherwise.
+        """
+        # Check for specific keys that indicate rich real-time context
+        if any(key in input_data for key in ['screen_content', 'audio_transcript', 'current_ide']):
+            return True
+        # Check for an explicit source indicator
+        if input_data.get('source') == 'realtime':
+            return True
+        # If it only contains 'query', it's likely a standard text query
+        if 'query' in input_data and len(input_data) == 1:
+            return False
+        if 'query' in input_data and 'overrides' in input_data and len(input_data) == 2:
+             return False
+
+        # Default: if not clearly a standard query, and JefeAgent is present, consider real-time.
+        # This heuristic might need refinement.
+        return bool(self.jefe_agent) if not input_data.get("query") else False
+
+
+    async def unified_process_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Unified entry point for processing any input.
+        Routes to either real-time processing (JefeAgent) or standard query processing.
+
+        Args:
+            input_data: A dictionary that can either contain keys for `JefeContext`
+                        (e.g., 'screen_content', 'audio_transcript', 'source': 'realtime')
+                        OR keys for standard query processing ('query', 'overrides').
+
+        Returns:
+            The processing result as a dictionary.
+        """
+        if self.should_use_realtime_processing(input_data):
+            self.logger.info("Routing to real-time processing (JefeAgent).")
+            # Ensure 'source' key is removed if it was only for routing,
+            # as process_realtime_input expects JefeContext fields.
+            # However, context_data for JefeContext.from_dict would handle extra keys.
+            return await self.process_realtime_input(input_data)
+        else:
+            self.logger.info("Routing to standard query processing.")
+            query = input_data.get("query", "")
+            if not query:
+                self.logger.error("Unified input routed to standard query processing, but 'query' key is missing or empty.")
+                return {"status": "error", "message": "Input for standard processing must contain a 'query'."}
+
+            overrides = input_data.get("overrides") # Can be None
+            return await self.process_query(query, query_data_overrides=overrides)
+
 
 if __name__ == '__main__':
     print("--- Coordinator Basic Test ---")
-    # ... (rest of __main__ block, needs async await for coordinator.process_query)
-    # For instance: asyncio.run(coordinator.process_query(...))
-    # This __main__ block needs significant update to run async code.
-    # For brevity, I will omit fully converting it here, as it's for basic demo.
-    # The unit tests are the primary way to test async functionality.
-    # ... (existing __main__ setup code) ...
+
+    # Ensure JefeAgent can be imported for the __main__ test block
+    # This might require specific path setup if running coordinator.py directly
+    JefeAgent_class = None
     try:
-        coordinator = Coordinator() # agent_config_path=dummy_config_file omitted for less verbose diff
-        if not coordinator.agents: print("No agents loaded.")
+        from src.agents.jefe_agent import JefeAgent as ImportedJefeAgent
+        JefeAgent_class = ImportedJefeAgent
+    except ImportError:
+        print("WARNING: JefeAgent could not be imported for __main__ test. Real-time tests will be skipped or limited.")
+        # Define a mock JefeAgent if the real one isn't available for testing basic coordinator flow
+        class MockJefeAgent(BaseAgent):
+            async def process_realtime_input(self, jefe_context: JefeContext) -> Dict[str, Any]:
+                self.logger.info(f"MockJefeAgent processing real-time input: {jefe_context.summarize(50,30)}")
+                return {"status": "success", "content": "Mock JefeAgent response to real-time input."}
+        JefeAgent_class = MockJefeAgent
+
+
+    def setup_jefe_integration(coordinator_instance: Coordinator):
+        if not JefeAgent_class:
+            print("JefeAgent class not available. Skipping Jefe registration in __main__.")
+            return
+
+        jefe_config = { # Simplified config for testing
+            "model_for_tools": "gemini-1.5-flash-latest",
+            "max_tokens_for_tools": 600,
+            "temperature_for_tools": 0.25
+        }
+        try:
+            jefe_agent_instance = JefeAgent_class( # type: ignore
+                agent_name="JefeMainTest",
+                api_manager=coordinator_instance.api_manager,
+                config=jefe_config
+            )
+            coordinator_instance.register_jefe_agent(jefe_agent_instance) # type: ignore
+            print("JefeAgent registered with Coordinator for __main__ test run.")
+        except Exception as e:
+            print(f"Error setting up JefeAgent for __main__ test: {e}", exc_info=True)
+
+
+    try:
+        coordinator = Coordinator()
+        setup_jefe_integration(coordinator) # Attempt to register JefeAgent
+
+        if not coordinator.agents and not coordinator.jefe_agent:
+            print("No agents (general or Jefe) loaded. Coordinator tests will be limited.")
         else:
-            print(f"Agents: {list(coordinator.agents.keys())}")
-            # Example of running an async method from sync context (for __main__ only)
-            # In a real async app, you'd await it directly.
+            print(f"General Agents: {list(coordinator.agents.keys())}")
+            if coordinator.jefe_agent:
+                 print(f"JefeAgent: {coordinator.jefe_agent.get_name()}")
+
             async def main_test():
+                # Test 1: Standard query (handled by general agents or JefeAgent's process_query)
                 query1 = "What is the capital of France? Explain in one sentence."
-                print(f"\nProcessing query 1: '{query1}'")
-                response1 = await coordinator.process_query(query1)
+                print(f"\nProcessing standard query 1: '{query1}'")
+                response1 = await coordinator.unified_process_input({"query": query1})
                 print(f"Response 1: {response1}")
-                print(f"--- Trace for query: '{query1[:50]}...' ---")
+                print(f"--- Trace for query 1: '{query1[:50]}...' ---")
                 for event in coordinator.context_manager.get_full_trace(): print(event)
 
+                # Test 2: Another standard query
                 query2 = "Write a Python function to calculate factorial."
-                print(f"\nProcessing query 2: '{query2}'")
-                response2 = await coordinator.process_query(query2)
+                print(f"\nProcessing standard query 2: '{query2}'")
+                response2 = await coordinator.unified_process_input({"query": query2})
                 print(f"Response 2: {response2}")
-                print(f"--- Trace for query: '{query2[:50]}...' ---")
+                print(f"--- Trace for query 2: '{query2[:50]}...' ---")
                 for event in coordinator.context_manager.get_full_trace(): print(event)
 
+                # Test 3: Sequential plan query
                 query_sequential = "summarize critique and list keywords for this document about AI ethics."
                 print(f"\nProcessing sequential plan query: '{query_sequential}'")
-                response_sequential = await coordinator.process_query(query_sequential)
+                response_sequential = await coordinator.unified_process_input({"query": query_sequential})
                 print(f"Response (sequential): {response_sequential}")
-                print(f"--- Trace for query: '{query_sequential[:50]}...' ---")
+                print(f"--- Trace for query (sequential): '{query_sequential[:50]}...' ---")
                 for event in coordinator.context_manager.get_full_trace(): print(event)
 
+                # Test 4: Parallel plan query
                 query_market = "concurrent market and competitor analysis for new EV startup"
                 print(f"\nProcessing parallel plan query (market): '{query_market}'")
-                response_market = await coordinator.process_query(query_market)
+                response_market = await coordinator.unified_process_input({"query": query_market})
                 print(f"Response (market): {response_market}")
-                print(f"--- Trace for query: '{query_market[:50]}...' ---")
+                print(f"--- Trace for query (market): '{query_market[:50]}...' ---")
                 for event in coordinator.context_manager.get_full_trace(): print(event)
+
+                # Test 5: Real-time input example (should be routed to JefeAgent if registered)
+                if coordinator.jefe_agent or "jefe_realtime_processor" in coordinator.realtime_processors:
+                    realtime_input_example = {
+                        'screen_content': "class Buggy {\n constructor() { console.log('error' \n} }", # Syntax error
+                        'audio_transcript': "I have a syntax error in my JavaScript code, it's not working.",
+                        'current_ide': "VSCode",
+                        'programming_language': "JavaScript",
+                        'error_messages': ["SyntaxError: Unexpected token '}'"],
+                        'source': 'realtime' # Indicator for routing, or rely on key presence
+                    }
+                    print(f"\nProcessing real-time input via Jefe: {str(realtime_input_example)[:100]}...")
+                    response_realtime = await coordinator.unified_process_input(realtime_input_example)
+                    print(f"Response (real-time Jefe): {response_realtime}")
+                    print(f"--- Trace for real-time Jefe input ---")
+                    for event in coordinator.context_manager.get_full_trace(): print(event)
+                else:
+                    print("\nSkipping real-time input test as JefeAgent or its processor is not registered.")
+
 
             if os.name == 'nt':
                  asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
             asyncio.run(main_test())
 
-    except Exception as e: print(f"Error in main: {e}")
+    except Exception as e: print(f"Error in main test execution: {e}", exc_info=True)
     print("\n--- Coordinator Basic Test Finished ---")

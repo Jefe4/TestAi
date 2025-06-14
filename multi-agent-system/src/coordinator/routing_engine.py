@@ -55,48 +55,116 @@ class RoutingEngine:
             A list of BaseAgent instances deemed suitable for the query, in order if from a plan.
         """
         query_type = analysis_result.get('query_type', 'N/A')
-        execution_plan = analysis_result.get("execution_plan") # This is a list of agent names
+        execution_plan = analysis_result.get("execution_plan")
 
         self.logger.info(
             f"Selecting agents for query type '{query_type}'. Available agents: {list(available_agents.keys())}."
         )
-        if execution_plan: # Check if execution_plan is not None and not empty
-            self.logger.info(f"TaskAnalyzer provided an execution plan: {execution_plan}.")
-            planned_agent_instances: List[BaseAgent] = []
-            plan_valid = True
-            for agent_name in execution_plan:
-                if agent_name in available_agents:
-                    planned_agent_instances.append(available_agents[agent_name])
-                else:
-                    self.logger.warning(
-                        f"Agent '{agent_name}' from execution_plan not found in available_agents. Plan is invalid."
+
+        if execution_plan and isinstance(execution_plan, list) and len(execution_plan) > 0:
+            self.logger.info(f"TaskAnalyzer provided an execution plan: {execution_plan}")
+
+            # Check for parallel block structure
+            if isinstance(execution_plan[0], dict) and execution_plan[0].get("type") == "parallel_block":
+                self.logger.info("Processing as a parallel_block execution plan.")
+                unique_agent_names_in_plan = set()
+                branches = execution_plan[0].get("branches", [])
+                if not branches:
+                    self.logger.warning("Parallel_block found, but no branches defined. Plan is invalid.")
+                    return []
+
+                for branch in branches:
+                    if not isinstance(branch, list):
+                        self.logger.warning(f"Invalid branch format in parallel_block: {branch}. Expected a list of steps. Plan is invalid.")
+                        return []
+                    for step_definition in branch:
+                        if not isinstance(step_definition, dict) or "agent_name" not in step_definition:
+                            self.logger.warning(
+                                f"Invalid step_definition in parallel_block branch: {step_definition}. "
+                                "Missing 'agent_name'. Plan is invalid."
+                            )
+                            return []
+                        unique_agent_names_in_plan.add(step_definition["agent_name"])
+
+                planned_agent_names = list(unique_agent_names_in_plan)
+                planned_agent_instances: List[BaseAgent] = []
+                all_agents_found = True
+                for agent_name in planned_agent_names:
+                    agent_instance = available_agents.get(agent_name)
+                    if agent_instance:
+                        planned_agent_instances.append(agent_instance)
+                    else:
+                        self.logger.warning(
+                            f"Agent '{agent_name}' from parallel_block execution_plan not found in available_agents. "
+                            "Plan is invalid."
+                        )
+                        all_agents_found = False
+                        break
+
+                if all_agents_found:
+                    self.logger.info(
+                        f"Parallel_block plan is valid. Selected {len(planned_agent_instances)} unique agent(s): "
+                        f"{[agent.get_name() for agent in planned_agent_instances]}"
                     )
-                    plan_valid = False
-                    break # Stop processing this plan
-            
-            if plan_valid:
-                self.logger.info(
-                    f"Execution plan is valid. Selected {len(planned_agent_instances)} agent(s) in planned order: "
-                    f"{[agent.get_name() for agent in planned_agent_instances]}"
-                )
-                return planned_agent_instances
+                    # Note: For parallel, the order in the returned list might not be critical,
+                    # but it's derived from the set-to-list conversion.
+                    return planned_agent_instances
+                else:
+                    self.logger.warning("Parallel_block plan was invalid (agent not found). Returning no agents.")
+                    return []
+
+            # Else, assume sequential plan (list of step definition dicts)
+            elif isinstance(execution_plan[0], dict) and "agent_name" in execution_plan[0]:
+                self.logger.info("Processing as a sequential execution plan (list of step definitions).")
+                planned_agent_instances: List[BaseAgent] = []
+                plan_valid = True
+                for step_definition in execution_plan:
+                    if not isinstance(step_definition, dict) or "agent_name" not in step_definition:
+                        self.logger.warning(
+                            f"Invalid step_definition in sequential plan: {step_definition}. "
+                            "Missing 'agent_name'. Plan is invalid."
+                        )
+                        plan_valid = False
+                        break
+                    agent_name = step_definition["agent_name"]
+                    agent_instance = available_agents.get(agent_name)
+                    if agent_instance:
+                        planned_agent_instances.append(agent_instance)
+                    else:
+                        self.logger.warning(
+                            f"Agent '{agent_name}' from sequential execution_plan not found in available_agents. "
+                            "Plan is invalid."
+                        )
+                        plan_valid = False
+                        break
+
+                if plan_valid:
+                    self.logger.info(
+                        f"Sequential execution plan is valid. Selected {len(planned_agent_instances)} agent(s) in planned order: "
+                        f"{[agent.get_name() for agent in planned_agent_instances]}"
+                    )
+                    return planned_agent_instances
+                else:
+                    self.logger.warning("Sequential execution plan was invalid (agent not found). Returning no agents.")
+                    return []
             else:
-                # If plan is invalid, should we fall back to suggested_agents or just return empty?
-                # For now, let's say an invalid plan means we cannot proceed with this analysis result confidently.
-                # The Coordinator might then decide to try a default agent or report an error.
-                # Alternatively, it could fall through to suggestion logic.
-                # Current subtask implies returning empty if plan is invalid.
-                self.logger.warning("Execution plan was invalid (agent not found). Returning no agents.")
+                # This case handles the old format (list of strings) or other invalid plan structures.
+                # For this subtask, we treat unrecognised execution_plan structures as invalid.
+                self.logger.warning(
+                    f"Execution plan format is not recognized or is invalid: {execution_plan}. "
+                    "Expected a parallel_block or a list of step_definitions. Returning no agents."
+                )
                 return []
 
-        # If no execution_plan, or if it was empty, proceed with suggested_agents logic
+        # If no execution_plan, or if it was empty or invalid and returned [], proceed with suggested_agents logic
+        self.logger.info(f"No valid execution plan, or plan processing resulted in no agents. Falling back to suggestion logic.")
         suggested_agent_names = analysis_result.get("suggested_agents", [])
-        self.logger.info(f"No valid execution plan. Processing suggested_agents: {suggested_agent_names}.")
+        self.logger.info(f"Processing suggested_agents: {suggested_agent_names}.")
         
         selected_agent_instances: List[BaseAgent] = []
 
-        if not available_agents: # Should have been caught by plan logic if plan existed but agents were empty
-            self.logger.warning("No agents available for routing (should not happen if plan logic was attempted). Returning empty list.")
+        if not available_agents:
+            self.logger.warning("No agents available for routing. Returning empty list.")
             return []
 
         if suggested_agent_names:

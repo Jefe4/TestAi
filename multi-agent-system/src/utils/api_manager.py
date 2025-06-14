@@ -4,7 +4,8 @@
 import os
 import json
 import yaml
-import requests
+import httpx # Added
+import asyncio # Added
 from typing import Dict, Optional, Any
 
 try:
@@ -39,8 +40,9 @@ class APIManager:
         """
         self.logger = get_logger("APIManager")
         self.service_configs: Dict[str, Dict[str, Any]] = {} # Allow Any for base_url etc.
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "MultiAgentSystem/1.0"})
+        # self.session = requests.Session() # Removed
+        # self.session.headers.update({"User-Agent": "MultiAgentSystem/1.0"}) # Removed
+        self.user_agent = "MultiAgentSystem/1.0" # Stored User-Agent
         
         actual_config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH
         self.load_service_configs(actual_config_path)
@@ -130,7 +132,7 @@ class APIManager:
         self.logger.warning(f"Auth header style not explicitly defined for service: {service_name}. Returning empty auth header.")
         return {}
 
-    def make_request(
+    async def make_request( # Changed to async def
         self,
         service_name: str,
         endpoint: str,
@@ -141,7 +143,7 @@ class APIManager:
         timeout: int = 30
     ) -> Dict[str, Any]:
         """
-        Makes an HTTP request to the specified service.
+        Makes an asynchronous HTTP request to the specified service using httpx.
         """
         service_info = self.service_configs.get(service_name)
         if not service_info or not service_info.get("base_url"):
@@ -152,53 +154,56 @@ class APIManager:
         url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
         
         auth_header = self.get_auth_header(service_name)
-        headers = {"Content-Type": "application/json", **auth_header, **(extra_headers or {})}
+        # Default headers for the client, can be overridden by extra_headers per request
+        client_headers = {"User-Agent": self.user_agent, "Content-Type": "application/json", **auth_header}
+        if extra_headers:
+            client_headers.update(extra_headers)
 
-        request_args: Dict[str, Any] = {"method": method.upper(), "url": url, "headers": headers, "timeout": timeout}
-
-        if method.upper() in ["POST", "PUT", "PATCH"]:
-            if data is not None:
-                request_args["json"] = data
-        elif data: # For GET, DELETE, etc. if data is provided, assume it's for params
-            request_args["params"] = data 
-        
-        if params: # Explicit params always get precedence or are merged
-            request_args["params"] = {**(request_args.get("params", {})), **params}
+        request_kwargs: Dict[str, Any] = {}
+        if data is not None and method.upper() in ["POST", "PUT", "PATCH", "DELETE"]: # DELETE can also have body
+            request_kwargs["json"] = data
+        if params is not None: # Handles params for GET or query params for POST etc.
+            request_kwargs["params"] = params
             
-        self.logger.debug(f"Making {method.upper()} request to {url} with json_data: {request_args.get('json')}, params: {request_args.get('params')}")
+        self.logger.debug(f"Making async {method.upper()} request to {url} with json_data: {request_kwargs.get('json')}, params: {request_kwargs.get('params')}")
 
         try:
-            response = self.session.request(**request_args)
-            self.handle_rate_limiting(service_name, response.headers)
-            response.raise_for_status() 
-            
-            if not response.content:
-                 self.logger.info(f"Received empty but successful (status {response.status_code}) response from {service_name} for endpoint {endpoint}.")
-                 return {"status": "success", "data": None, "status_code": response.status_code}
+            async with httpx.AsyncClient(timeout=timeout, headers=client_headers) as client:
+                response = await client.request(method=method.upper(), url=url, **request_kwargs)
 
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            self.logger.error(f"HTTP error for {service_name} on {url}: {e.response.status_code} - {e.response.text[:500]}") # Log first 500 chars of error
+                # Rate limiting check (headers are case-insensitive in httpx.Headers)
+                self.handle_rate_limiting(service_name, response.headers)
+
+                response.raise_for_status() # Raises httpx.HTTPStatusError for 4xx/5xx
+            
+                if not response.content: # Check if response body is empty
+                     self.logger.info(f"Received empty but successful (status {response.status_code}) response from {service_name} for endpoint {endpoint}.")
+                     return {"status": "success", "data": None, "status_code": response.status_code}
+
+                return response.json()
+        except httpx.HTTPStatusError as e: # Specific error for 4xx/5xx responses
+            self.logger.error(f"HTTP status error for {service_name} on {url}: {e.response.status_code} - {e.response.text[:500]}")
             try:
                 error_content = e.response.json()
-            except json.JSONDecodeError:
+            except json.JSONDecodeError: # If error response is not JSON
                 error_content = e.response.text
-            return {"error": "HTTPError", "message": str(e), "status_code": e.response.status_code, "content": error_content}
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout error for {service_name} on {url} after {timeout} seconds")
-            return {"error": "Timeout", "message": f"Request timed out after {timeout} seconds.", "status_code": 408}
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Request exception for {service_name} on {url}: {e}")
-            return {"error": "RequestException", "message": str(e), "status_code": 503} # Service Unavailable for general RequestException
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON response from {service_name} for {url}: {e}. Response text: {response.text[:500] if 'response' in locals() else 'N/A'}")
-            return {"error": "JSONDecodeError", "message": str(e), "raw_response": response.text if 'response' in locals() else "N/A", "status_code": 502} # Bad Gateway
+            return {"error": "HTTPStatusError", "message": str(e), "status_code": e.response.status_code, "content": error_content}
+        except httpx.TimeoutException as e:
+            self.logger.error(f"Timeout error for {service_name} on {url} after {timeout} seconds: {e}")
+            return {"error": "TimeoutException", "message": f"Request timed out after {timeout} seconds.", "status_code": 408}
+        except httpx.RequestError as e: # Broad exception for other request issues (network, DNS, etc.)
+            self.logger.error(f"Request error for {service_name} on {url}: {e}")
+            return {"error": "RequestError", "message": str(e), "status_code": 503} # General service unavailable
+        except json.JSONDecodeError as e: # If response.json() fails
+            # 'response' might not be in locals() if error occurred before response object was assigned (e.g. client init error)
+            # However, if JSONDecodeError happens, response object exists.
+            self.logger.error(f"Failed to decode JSON response from {service_name} for {url}: {e}. Response text: {response.text[:500]}")
+            return {"error": "JSONDecodeError", "message": str(e), "raw_response": response.text, "status_code": 502} # Bad Gateway
 
-
-    def handle_rate_limiting(self, service_name: str, response_headers: Any): 
+    def handle_rate_limiting(self, service_name: str, response_headers: httpx.Headers): # Type hint updated
         """
         Placeholder for handling rate limiting based on response headers.
-        `response_headers` is a requests.structures.CaseInsensitiveDict
+        `response_headers` is httpx.Headers (case-insensitive dict-like).
         """
         remaining = response_headers.get('X-RateLimit-Remaining')
         retry_after_seconds = response_headers.get('Retry-After') # Can be seconds or a date
@@ -272,25 +277,61 @@ if __name__ == '__main__':
         "base_url": "https://jsonplaceholder.typicode.com",
         "api_key": "unused_dummy_key" 
     }
-    
-    print("  Testing GET request...")
-    get_response = manager.make_request(
-        service_name="public_jsonplaceholder",
-        endpoint="todos/1",
-        method="GET"
-    )
-    print(f"  GET Response: {json.dumps(get_response, indent=2)}")
 
-    print("\n  Testing POST request...")
-    post_response = manager.make_request(
-        service_name="public_jsonplaceholder",
-        endpoint="posts",
-        method="POST",
-        data={"title": "Test Post", "body": "This is a test.", "userId": 1}
-    )
-    print(f"  POST Response: {json.dumps(post_response, indent=2)}")
+    async def main_test(): # Create an async function to run the tests
+        print("  Testing GET request...")
+        get_response = await manager.make_request( # await the async call
+            service_name="public_jsonplaceholder",
+            endpoint="todos/1",
+            method="GET"
+        )
+        print(f"  GET Response: {json.dumps(get_response, indent=2)}")
 
-    print("\n--- APIManager testing done. ---")
+        print("\n  Testing POST request...")
+        post_response = await manager.make_request( # await the async call
+            service_name="public_jsonplaceholder",
+            endpoint="posts",
+            method="POST",
+            data={"title": "Test Post", "body": "This is a test.", "userId": 1}
+        )
+        print(f"  POST Response: {json.dumps(post_response, indent=2)}")
+
+        print("\n  Testing GET request with params...")
+        get_params_response = await manager.make_request(
+            service_name="public_jsonplaceholder",
+            endpoint="comments",
+            method="GET",
+            params={"postId": 1}
+        )
+        print(f"  GET with Params Response: {json.dumps(get_params_response, indent=2)}")
+
+
+        print("\n  Testing non-existent endpoint (404)...")
+        not_found_response = await manager.make_request(
+            service_name="public_jsonplaceholder",
+            endpoint="nonexistent/123",
+            method="GET"
+        )
+        print(f"  404 Response: {json.dumps(not_found_response, indent=2)}")
+
+        # Test timeout (requires a slow endpoint or very short timeout)
+        # manager.service_configs["httpbin"] = {"base_url": "https://httpbin.org", "api_key": "dummy"}
+        # print("\n  Testing Timeout...")
+        # timeout_response = await manager.make_request(
+        #     service_name="httpbin",
+        #     endpoint="delay/5", # 5 second delay
+        #     method="GET",
+        #     timeout=2 # 2 second timeout
+        # )
+        # print(f"  Timeout Response: {json.dumps(timeout_response, indent=2)}")
+
+
+    if __name__ == '__main__':
+        # ... (rest of the setup code remains the same)
+        # ...
+        # Run the async main_test function
+        asyncio.run(main_test())
+        print("\n--- APIManager testing done. ---")
     print(f"Note: A dummy config may have been created/used at {dummy_config_path}. You can remove it if desired.")
     print("To test specific service configurations, ensure their API keys are set as environment variables (e.g., DEEPSEEK_API_KEY, CLAUDE_API_KEY, etc.) or in the YAML config.")
 
@@ -299,5 +340,5 @@ if __name__ == '__main__':
 # - Implement more robust retry mechanisms (e.g., exponential backoff).
 # - Expand handle_rate_limiting to actually pause/retry.
 # - Securely handle and log API errors.
-# - Ensure thread-safety if used in a multi-threaded context (requests.Session is not thread-safe).
-#   For asyncio, aiohttp.ClientSession would be preferred.
+# - Ensure thread-safety if used in a multi-threaded context (requests.Session is not thread-safe). -> httpx.AsyncClient is designed for asyncio
+#   For asyncio, aiohttp.ClientSession would be preferred. -> Using httpx now

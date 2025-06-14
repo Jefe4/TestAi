@@ -1,6 +1,7 @@
 # src/agents/gemini_agent.py
 """Specialized agent for interacting with Google's Gemini AI models."""
 
+import asyncio # Added
 from typing import Dict, Any, Optional, List
 
 try:
@@ -11,6 +12,7 @@ except ImportError:
     # Fallback for direct script execution or import issues
     import sys
     import os
+    import asyncio # Added for fallback scenario
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -118,7 +120,7 @@ class GeminiAgent(BaseAgent):
             "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro"] 
         }
 
-    def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
         """
         Processes a query using the Gemini API.
 
@@ -160,7 +162,7 @@ class GeminiAgent(BaseAgent):
             current_safety_settings = safety_settings_override if safety_settings_override else self.model.safety_settings
             
             # The SDK's generate_content method takes generation_config and safety_settings directly.
-            response = self.model.generate_content(
+            response = await self.model.generate_content_async( # Changed to generate_content_async
                 contents=user_prompt_parts, # type: ignore
                 generation_config=current_gen_config, # type: ignore
                 safety_settings=current_safety_settings # type: ignore
@@ -231,6 +233,7 @@ if __name__ == '__main__':
     # WARNING: Running this directly will attempt to make real API calls if GEMINI_API_KEY is set.
     # For true unit testing, genai.GenerativeModel should be mocked.
 
+async def main_gemini_test(): # Wrapped in async main function
     # Basic logger for testing if not run as part of the full system
     try:
         logger = get_logger("GeminiAgentTest") # type: ignore
@@ -260,18 +263,21 @@ if __name__ == '__main__':
                     "api_key": "DUMMY_KEY_FOR_INIT_TEST_ONLY" # Will fail if genai.configure is strict
                 }
                 # This dummy APIManager won't be used by GeminiAgent for calls
-                dummy_api_manager_for_constructor = APIManager() # type: ignore
-                try:
-                    gemini_agent_test_init = GeminiAgent(
-                        agent_name="TestGeminiNoKey",
-                        api_manager=dummy_api_manager_for_constructor, # type: ignore
-                        config=agent_config_no_key
-                    )
-                    print(f"Agent Name: {gemini_agent_test_init.get_name()}")
-                    print(f"Agent Capabilities: {gemini_agent_test_init.get_capabilities()}")
-                    print("GeminiAgent instantiated with dummy key (SDK configure likely failed or used dummy).")
-                except Exception as e:
-                    print(f"GeminiAgent instantiation failed as expected without valid key setup: {e}")
+                dummy_api_manager_for_constructor = APIManager() if 'APIManager' in globals() and APIManager is not None else None # type: ignore
+                if dummy_api_manager_for_constructor:
+                    try:
+                        gemini_agent_test_init = GeminiAgent(
+                            agent_name="TestGeminiNoKey",
+                            api_manager=dummy_api_manager_for_constructor, # type: ignore
+                            config=agent_config_no_key
+                        )
+                        print(f"Agent Name: {gemini_agent_test_init.get_name()}")
+                        print(f"Agent Capabilities: {gemini_agent_test_init.get_capabilities()}")
+                        print("GeminiAgent instantiated with dummy key (SDK configure likely failed or used dummy).")
+                    except Exception as e:
+                        print(f"GeminiAgent instantiation failed as expected without valid key setup: {e}")
+                else:
+                    print("APIManager not available for GeminiAgent instantiation test (likely fallback import scenario).")
             else:
                 print("Gemini SDK (google-generativeai) not installed. Cannot test GeminiAgent.")
         except Exception as e:
@@ -287,7 +293,11 @@ if __name__ == '__main__':
         }
         
         # Dummy APIManager for constructor consistency
-        dummy_api_manager = APIManager() if 'APIManager' in globals() else None # type: ignore
+        dummy_api_manager = APIManager() if 'APIManager' in globals() and APIManager is not None else None # type: ignore
+
+        if not dummy_api_manager:
+            print("APIManager not available for live test, skipping.")
+            return
 
         try:
             gemini_agent = GeminiAgent(
@@ -303,7 +313,7 @@ if __name__ == '__main__':
             # Test case 1: Simple text query
             print("\n--- Test Case 1: Simple Text Query ---")
             query1_data = {"prompt_parts": ["What is the main component of the sun?"]}
-            response1 = gemini_agent.process_query(query1_data)
+            response1 = await gemini_agent.process_query(query1_data) # Awaited
             print(f"Response 1: {response1}")
             if response1["status"] == "success":
                 assert "hydrogen" in response1.get("content", "").lower() or \
@@ -315,24 +325,14 @@ if __name__ == '__main__':
             # Test case 2: Missing prompt_parts
             print("\n--- Test Case 2: Missing prompt_parts ---")
             query2_data = {}
-            response2 = gemini_agent.process_query(query2_data)
+            response2 = await gemini_agent.process_query(query2_data) # Awaited
             print(f"Response 2: {response2}")
             assert response2["status"] == "error"
             assert "Valid 'prompt_parts' (list) missing or empty" in response2["message"]
             print("Test Case 2 Passed (correctly handled missing prompt).")
 
             # Test case 3: Query that might be blocked by safety (example)
-            # This is highly dependent on default and actual safety settings of the API key / model version
             print("\n--- Test Case 3: Potentially Safety-Blocked Query (Illustrative) ---")
-            # query3_data = {"prompt_parts": ["Tell me how to do something very dangerous."]} # Example
-            # response3 = gemini_agent.process_query(query3_data)
-            # print(f"Response 3: {response3}")
-            # if response3["status"] == "error" and "blocked" in response3.get("message","").lower():
-            #    print("Test Case 3 Passed (query was blocked as expected or similar error).")
-            # elif response3["status"] == "success":
-            #    print("Test Case 3 Warning: Query was not blocked. Content: ", response3.get("content","")[:100] + "...")
-            # else:
-            #    print(f"Test Case 3 Result: {response3.get('message')}")
             print("Skipping Test Case 3 (safety blocking) as results are unpredictable without fine-tuned inputs/settings.")
 
 
@@ -343,6 +343,12 @@ if __name__ == '__main__':
     print("\n--- GeminiAgent testing block finished. ---")
     if genai is None:
         print("Reminder: google-generativeai SDK is not installed. GeminiAgent functionality is unavailable.")
+
+if __name__ == '__main__':
+    # import asyncio # Added at top
+    if os.name == 'nt': # Optional: Windows specific policy for asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.run(main_gemini_test())
 
 # TODO:
 # - Add support for multimodal inputs (images, etc.) in prompt_parts.

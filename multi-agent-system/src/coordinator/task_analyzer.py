@@ -1,9 +1,11 @@
 # src/coordinator/task_analyzer.py
 """
-Analyzes incoming queries to determine their nature and suggest suitable agents or predefined plans.
+Analyzes incoming user queries to determine their nature, intent, complexity,
+and to generate an execution plan (sequential or parallel) or suggest
+suitable agents based on their capabilities.
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set # Standard typing modules
 
 try:
     from ..agents.base_agent import BaseAgent
@@ -21,17 +23,36 @@ class TaskAnalyzer:
     """
     Analyzes queries to understand their type, complexity, intent,
     and to determine a sequential or parallel plan of agents, or suggest agents based on capabilities.
+
+    The analyzer uses a keyword-based approach to categorize queries and map them to
+    predefined plan templates (sequential or parallel) or to a set of capabilities
+    for agent suggestion. It also assesses query complexity and recommends an approach.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initializes the TaskAnalyzer.
+
+        Args:
+            config: Optional configuration dictionary for the TaskAnalyzer.
+                    Currently not used but can be extended for future customization.
         """
         self.config = config if config is not None else {}
         self.logger = get_logger("TaskAnalyzer")
         
+        # Defines how queries are mapped to plans or capabilities.
+        # Each key (e.g., "analyze_market_and_competitors") is a descriptive name for a type of task.
+        # - "keywords": List of phrases that, if found in a query, trigger this task type.
+        # - "query_type": A specific categorization for this type of query.
+        # - "intent": The inferred user intent.
+        # - "parallel_plan_template" or "sequential_plan_template": Defines a multi-step execution plan.
+        #   - "task_description": Overall description for the plan or block.
+        #   - "output_aggregation" (for parallel): How to combine branch outputs (e.g., "merge_all").
+        #   - "branches" (for parallel): List of branches, each a list of sequential steps.
+        #   - Each step template includes "agent_name", "task_description", and optional "agent_config_overrides".
+        # - "capabilities_needed" (if no template): List of capabilities agents should have to handle this query type.
         self.keyword_map = {
-            "analyze_market_and_competitors": { # New entry for parallel plan
+            "analyze_market_and_competitors": {
                 "keywords": ["concurrent market and competitor analysis", "market research and competitive landscape"],
                 "query_type": "parallel_research_analysis",
                 "intent": "comprehensive_market_understanding",
@@ -92,23 +113,44 @@ class TaskAnalyzer:
                 "capabilities_needed": ["text_generation", "general_purpose"] 
             }
         }
-        self.logger.info(f"TaskAnalyzer initialized with config: {self.config} and keyword map.")
+        self.logger.info(f"TaskAnalyzer initialized with keyword map for {len(self.keyword_map)} task types.")
 
     def _process_plan_steps(self, plan_step_templates: List[Dict[str, Any]], plan_id_prefix: str) -> List[Dict[str, Any]]:
-        """Helper to process a list of step templates for either sequential or parallel branches."""
+        """
+        Helper function to convert plan step templates into full step definitions.
+
+        This function takes a list of simplified step templates (typically containing
+        agent_name, task_description, and overrides) and enriches them with
+        default input mappings and unique output IDs.
+
+        For the first step in a sequence (or branch), input is mapped from "original_query".
+        For subsequent steps, input is mapped from the "content" of the "previous_step"'s output.
+
+        Args:
+            plan_step_templates: A list of dictionaries, where each dictionary is a template
+                                 for a step in an execution plan.
+            plan_id_prefix: A string prefix used to generate unique output IDs for steps
+                            (e.g., "sq_summarize" or "pb_market_b0").
+
+        Returns:
+            A list of processed step definition dictionaries, ready to be included in
+            an execution plan.
+        """
         processed_steps: List[Dict[str, Any]] = []
         for i, step_template in enumerate(plan_step_templates):
-            agent_name = step_template["agent_name"]
+            agent_name = step_template["agent_name"] # Name of the agent to execute this step
             task_desc = step_template["task_description"]
             agent_config_overrides = step_template.get("agent_config_overrides", {})
             
-            # Use a more specific output_id for steps within parallel branches
-            output_id = f"{plan_id_prefix}_step{i+1}_{agent_name.lower()}"
+            # Generate a unique output ID for this step, incorporating the prefix, step number, and agent name.
+            output_id = f"{plan_id_prefix}_step{i+1}_{agent_name.lower().replace('agent', '')}"
             
             current_step_input_mapping: Dict[str, Dict[str,str]] = {}
-            if i == 0:
+            # Default input mapping: first step takes original query, subsequent steps take previous content.
+            if i == 0: # First step in the sequence
                 current_step_input_mapping["prompt"] = {"source": "original_query"}
-            else:
+            else: # Subsequent steps
+                # Reference the 'output_id' of the previously processed step in this sequence.
                 previous_step_output_id = processed_steps[i-1]["output_id"]
                 current_step_input_mapping["prompt"] = {"source": f"ref:{previous_step_output_id}.content"}
             
@@ -122,99 +164,138 @@ class TaskAnalyzer:
         return processed_steps
 
     def analyze_query(self, query: str, available_agents: Dict[str, BaseAgent], context_trace: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Analyzes a given query to determine its characteristics and formulate an execution strategy.
+
+        This involves:
+        1. Matching the query against a keyword map to determine query type and intent.
+        2. Assigning a complexity score (simple, moderate, complex) based on query characteristics
+           and matched task type.
+        3. Generating an execution plan (sequential or parallel) if a predefined template matches the query.
+        4. Suggesting suitable agents based on capabilities if no predefined plan is found.
+        5. Determining a recommended approach (e.g., "multi_agent_plan", "single_agent_with_tools").
+
+        Args:
+            query: The user's query string.
+            available_agents: A dictionary of available agent instances, keyed by name.
+            context_trace: Optional list of previous interaction events, currently logged but not used
+                           for altering analysis logic in this version.
+
+        Returns:
+            A dictionary containing the analysis results, including:
+            - "original_query": The input query.
+            - "query_type": Categorization of the query.
+            - "complexity": Assessed complexity ("simple", "moderate", "complex").
+            - "intent": Inferred user intent.
+            - "suggested_agents": List of agent names if no plan is made.
+            - "execution_plan": A list of step definitions (can be a parallel block).
+            - "processed_query_for_agent": The query text to be sent to the first agent.
+            - "requires_human_intervention": Boolean, currently hardcoded to False.
+            - "recommended_approach": String suggesting an overall strategy.
+        """
         self.logger.info(f"Analyzing query: '{query[:100]}...' with {len(available_agents)} agents available.")
         if context_trace:
             self.logger.debug(f"Received context_trace with {len(context_trace)} events.")
-        # The actual use of context_trace will be implemented in a later task.
+        # Future: context_trace could be used to influence query understanding or plan generation.
         
-        lower_query = query.lower()
+        lower_query = query.lower() # For case-insensitive keyword matching
         
+        # Default to 'general_query' if no specific keywords match
         matched_entry = self.keyword_map["general_query"]
-        matched_type_name = "general_query" # Keep track of the matched keyword_map key
+        matched_type_name = "general_query"
 
+        # Iterate through keyword_map to find a matching task type
         for type_name, type_info in self.keyword_map.items():
-            if type_name == "general_query": continue
-            if any(keyword in lower_query for keyword in type_info["keywords"]):
+            if type_name == "general_query": continue # Skip default, check specific ones first
+            if any(keyword in lower_query for keyword in type_info.get("keywords", [])):
                 matched_entry = type_info
                 matched_type_name = type_name
+                self.logger.debug(f"Query matched pre-defined type: '{type_name}'")
                 break 
         
-        determined_query_type = matched_entry["query_type"]
-        determined_intent = matched_entry["intent"]
-        self.logger.debug(f"Query matched type '{matched_type_name}' (as {determined_query_type}) with intent '{determined_intent}'.")
+        determined_query_type = matched_entry.get("query_type", "unknown")
+        determined_intent = matched_entry.get("intent", "unknown")
+        self.logger.debug(f"Determined Query Type: '{determined_query_type}', Intent: '{determined_intent}' (based on map key: '{matched_type_name}').")
 
-        # Complexity Score Logic
-        complexity_score = "moderate" # Default
+        # --- Complexity Score Logic ---
+        complexity_score = "moderate" # Default complexity
         if "parallel_plan_template" in matched_entry or "sequential_plan_template" in matched_entry:
-            complexity_score = "complex"
+            complexity_score = "complex" # Predefined multi-step plans are considered complex
         elif matched_type_name == "general_query" or matched_type_name == "question_answering":
-            if len(lower_query.split()) < 15: # Arbitrary short query length
+            # Simple Q&A or general queries might be simple if short
+            if len(lower_query.split()) < 15: # Heuristic for short query
                 complexity_score = "simple"
 
-        # Keyword-based complexity adjustments
-        if any(s_kw in lower_query for s_kw in ["briefly", "simple", "one sentence"]):
+        # Adjust complexity based on specific keywords in the query
+        simplifying_keywords = ["briefly", "simple", "one sentence", "quick summary"]
+        complexifying_keywords = ["detailed", "comprehensive", "in-depth", "research", "analyze and compare", "step-by-step plan"]
+
+        if any(s_kw in lower_query for s_kw in simplifying_keywords):
             if complexity_score == "moderate": complexity_score = "simple"
-            # Don't override "complex" plans to "simple" just due to these keywords easily
-        if any(c_kw in lower_query for c_kw in ["detailed", "comprehensive", "in-depth", "research", "analyze and compare"]):
-            if complexity_score == "simple": complexity_score = "moderate" # Upgrade simple
-            elif complexity_score == "moderate": complexity_score = "complex" # Upgrade moderate
+            # Note: We don't downgrade "complex" plans to "simple" easily based on just these keywords.
+        if any(c_kw in lower_query for c_kw in complexifying_keywords):
+            if complexity_score == "simple": complexity_score = "moderate"
+            elif complexity_score == "moderate": complexity_score = "complex"
 
-        self.logger.debug(f"Determined complexity score: {complexity_score}")
+        self.logger.debug(f"Final determined complexity score: {complexity_score}")
 
+        # --- Execution Plan Generation or Agent Suggestion ---
         suggested_agent_names: List[str] = []
         execution_plan: List[Dict[str, Any]] = []
-        has_defined_plan = False
+        has_defined_plan = False # Flag to track if a plan template was used
 
+        # Check for and process a parallel plan template
         if "parallel_plan_template" in matched_entry:
             parallel_template = matched_entry["parallel_plan_template"]
-            self.logger.info(f"Found parallel plan template for intent '{determined_intent}'.")
+            self.logger.info(f"Generating parallel execution plan based on template for intent: '{determined_intent}'.")
             
             processed_branches = []
             for branch_idx, branch_template_steps in enumerate(parallel_template.get("branches", [])):
-                branch_id_prefix = f"pb_{matched_type_name}_b{branch_idx}"
+                branch_id_prefix = f"pb_{matched_type_name}_b{branch_idx}" # Prefix for branch step output IDs
                 processed_branch = self._process_plan_steps(branch_template_steps, branch_id_prefix)
                 processed_branches.append(processed_branch)
             
-            parallel_block_output_id = f"pb_final_{matched_type_name}" # Unique ID for the whole block
-            execution_plan = [{ # Parallel plan is a single step in the main execution_plan list
+            parallel_block_output_id = f"pb_final_{matched_type_name}"
+            execution_plan = [{
                 "type": "parallel_block",
                 "task_description": parallel_template.get("task_description", "Execute tasks in parallel."),
-                "output_aggregation": parallel_template.get("output_aggregation", "merge_all"),
-                "output_id": parallel_block_output_id,
+                "output_aggregation": parallel_template.get("output_aggregation", "merge_all"), # How to combine branch results
+                "output_id": parallel_block_output_id, # ID for the output of the entire parallel block
                 "branches": processed_branches
             }]
-            suggested_agent_names = []
+            # For plan-based execution, specific agents are defined in the plan, so no general suggestion needed here.
             has_defined_plan = True
 
+        # Check for and process a sequential plan template
         elif "sequential_plan_template" in matched_entry:
             plan_template = matched_entry["sequential_plan_template"]
-            self.logger.info(f"Found sequential plan template for intent '{determined_intent}'.")
-            seq_id_prefix = f"sq_{matched_type_name}"
+            self.logger.info(f"Generating sequential execution plan based on template for intent: '{determined_intent}'.")
+            seq_id_prefix = f"sq_{matched_type_name}" # Prefix for sequential step output IDs
             execution_plan = self._process_plan_steps(plan_template, seq_id_prefix)
-            suggested_agent_names = []
             has_defined_plan = True
         
+        # If no predefined plan, suggest agents based on capabilities
         elif "capabilities_needed" in matched_entry:
-            # This block runs if no predefined plan was matched
             capabilities_needed = set(matched_entry["capabilities_needed"])
-            # ... (capability-based suggestion logic - remains unchanged) ...
-            self.logger.debug(f"Looking for agents with capabilities: {capabilities_needed}")
+            self.logger.debug(f"No predefined plan. Looking for agents with capabilities: {capabilities_needed}")
             if available_agents:
                 for agent_name, agent_instance in available_agents.items():
                     try:
                         agent_caps_dict = agent_instance.get_capabilities()
                         agent_declared_capabilities = set(agent_caps_dict.get("capabilities", []))
+                        # Ensure capabilities are strings before set operations
                         if not all(isinstance(c, str) for c in agent_declared_capabilities):
-                             self.logger.warning(f"Agent '{agent_name}' has malformed 'capabilities'. Skipping.")
+                             self.logger.warning(f"Agent '{agent_name}' has malformed 'capabilities' (non-string items). Skipping.")
                              continue
                         if capabilities_needed.intersection(agent_declared_capabilities):
                             suggested_agent_names.append(agent_name)
-                            self.logger.debug(f"Agent '{agent_name}' matches. Declared: {agent_declared_capabilities}")
+                            self.logger.debug(f"Agent '{agent_name}' matches required capabilities. Declared: {agent_declared_capabilities}")
                     except Exception as e:
                         self.logger.error(f"Error processing capabilities for agent '{agent_name}': {e}", exc_info=True)
 
+                # Fallback to general capabilities if no specific agents found for non-general query types
                 if not suggested_agent_names and determined_query_type != self.keyword_map["general_query"]["query_type"]:
-                    self.logger.info(f"No specific agents for '{determined_query_type}'. Trying general fallback.")
+                    self.logger.info(f"No specific agents found for '{determined_query_type}'. Trying general purpose agent fallback.")
                     fallback_caps = set(self.keyword_map["general_query"]["capabilities_needed"])
                     for agent_name, agent_instance in available_agents.items():
                         try:
@@ -225,34 +306,38 @@ class TaskAnalyzer:
                         except Exception as e:
                              self.logger.error(f"Error during fallback capability check for agent '{agent_name}': {e}", exc_info=True)
             
-            if not suggested_agent_names and available_agents:
-                 self.logger.warning(f"No agents matched capabilities for query type '{determined_query_type}'.")
-        
+            if not suggested_agent_names and available_agents: # Log if still no agents after all checks
+                 self.logger.warning(f"No agents (neither specific nor fallback) matched capabilities for query type '{determined_query_type}'.")
 
-        # Recommended Approach Logic
-        recommended_approach = "multi_agent_plan" # Default
+
+        # --- Recommended Approach Logic ---
+        recommended_approach = "multi_agent_plan" # Default assumption, especially if a plan was generated
         if not has_defined_plan and complexity_score == "simple":
-            # Only suggest single_agent_with_tools if no specific plan was found AND complexity is simple.
-            # This implies it's a capability-based suggestion for a simple query.
+            # If no specific plan template was matched (i.e., it's a capability-based suggestion)
+            # AND the complexity is assessed as "simple", then suggest a simpler approach.
             recommended_approach = "single_agent_with_tools"
+            # "single_agent_with_tools" implies that a single, versatile agent might handle it,
+            # possibly by being equipped with appropriate tools in a more advanced system.
 
+        # Construct the final analysis dictionary
         analysis = {
             "original_query": query,
             "query_type": determined_query_type,
-            "complexity": complexity_score, # Updated
+            "complexity": complexity_score,
             "intent": determined_intent,
-            "suggested_agents": suggested_agent_names, 
-            "execution_plan": execution_plan, 
-            "processed_query_for_agent": query, 
-            "requires_human_intervention": False,
-            "recommended_approach": recommended_approach # New field
+            "suggested_agents": suggested_agent_names, # Empty if a plan is present
+            "execution_plan": execution_plan, # Empty if no plan template matched
+            "processed_query_for_agent": query, # This could be refined further, e.g., by extracting key info
+            "requires_human_intervention": False, # Placeholder for future functionality
+            "recommended_approach": recommended_approach
         }
 
+        # Log a summary of the analysis
         self.logger.info(
             f"Analysis complete. Query Type: '{determined_query_type}', Intent: '{determined_intent}', "
             f"Complexity: '{complexity_score}', Recommended Approach: '{recommended_approach}', "
-            f"Plan type: {'Parallel' if 'parallel_plan_template' in matched_entry else 'Sequential' if 'sequential_plan_template' in matched_entry else 'Suggestion'}, "
-            f"Plan steps/branches: {len(execution_plan[0]['branches']) if 'parallel_plan_template' in matched_entry and execution_plan and execution_plan[0].get('type') == 'parallel_block' else len(execution_plan) if execution_plan else 'N/A'}, "
+            f"Plan type: {'Parallel' if execution_plan and execution_plan[0].get('type') == 'parallel_block' else 'Sequential' if execution_plan else 'Suggestion'}, "
+            f"Plan steps/branches: {len(execution_plan[0]['branches']) if execution_plan and execution_plan[0].get('type') == 'parallel_block' else len(execution_plan) if execution_plan else 'N/A'}, "
             f"Suggested (if no plan): {suggested_agent_names if suggested_agent_names else 'N/A'}"
         )
         return analysis

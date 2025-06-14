@@ -1,20 +1,21 @@
 # src/agents/deepseek_agent.py
-"""Specialized agent for interacting with DeepSeek AI models."""
+"""
+Specialized agent for interacting with DeepSeek AI models, particularly
+those focused on code generation and complex reasoning tasks.
+"""
 
-import asyncio # Added
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, Optional, List # Added List for type hinting
 
 try:
     from .base_agent import BaseAgent
     from ..utils.api_manager import APIManager
-    # Logger is typically available via self.logger from BaseAgent
+    # Logger is inherited from BaseAgent.
 except ImportError:
-    # This block is for fallback if the script is run in a way that top-level packages aren't recognized
-    # For instance, if you run `python deepseek_agent.py` directly from the agents directory.
+    # Fallback for direct script execution or import issues
     import sys
     import os
-    import asyncio # Added for fallback scenario
-    # Add project root to sys.path to allow for absolute imports
+    import asyncio
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -24,8 +25,9 @@ except ImportError:
 
 class DeepSeekAgent(BaseAgent):
     """
-    An agent that utilizes DeepSeek AI models for various tasks like
-    code generation, text completion, and complex reasoning.
+    An agent that utilizes DeepSeek AI models, often specialized for tasks like
+    code generation, text completion, and complex problem-solving.
+    It uses a chat-like interaction model via the APIManager.
     """
 
     def __init__(self, agent_name: str, api_manager: APIManager, config: Optional[Dict[str, Any]] = None):
@@ -33,106 +35,137 @@ class DeepSeekAgent(BaseAgent):
         Initializes the DeepSeekAgent.
 
         Args:
-            agent_name: The name of the agent.
-            api_manager: An instance of APIManager to handle API calls.
+            agent_name: The user-defined name for this agent instance.
+            api_manager: An instance of `APIManager` for handling API calls to DeepSeek.
             config: Optional configuration dictionary for the agent.
-                    Expected keys: "model", "max_tokens", "temperature", "default_system_prompt".
+                    Expected keys can include:
+                    - "model" (str): The specific DeepSeek model to use (e.g., "deepseek-coder").
+                    - "max_tokens" (int): Default maximum tokens for the response.
+                    - "temperature" (float): Default sampling temperature.
+                    - "default_system_prompt" (str): A default system prompt.
         """
         super().__init__(agent_name, config)
-        self.api_manager = api_manager
+        self.api_manager = api_manager # Store APIManager for API calls
         
-        # Default model if not specified in config
-        self.model = self.config.get("model", "deepseek-coder") 
-        self.logger.info(f"DeepSeekAgent '{self.agent_name}' initialized with model '{self.model}'.")
+        # Set the DeepSeek model, defaulting if not specified in config.
+        self.model: str = self.config.get("model", "deepseek-coder")
+        self.logger.info(f"DeepSeekAgent '{self.agent_name}' initialized, configured for model '{self.model}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Describes the capabilities of the DeepSeekAgent.
-        """
-        return {
-            "description": "Agent for deep reasoning, complex problem solving, and code analysis using DeepSeek.",
-            "capabilities": ["text_generation", "code_generation", "code_analysis", "complex_reasoning"],
-            "models_supported": ["deepseek-coder", "deepseek-llm"] # Example, can be dynamic
-        }
-
-    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
-        """
-        Processes a query using the DeepSeek API.
-
-        Args:
-            query_data: A dictionary containing the query details.
-                        Expected keys:
-                        - "prompt" (str): The user's actual query.
-                        - "system_prompt" (Optional[str]): Custom system prompt for this query.
-                                                           Overrides default if provided.
-                        - Other potential keys for future use: "conversation_history", "temperature_override", etc.
 
         Returns:
-            A dictionary containing the status of the operation and the response content or error message.
+            A dictionary detailing the agent's purpose, primary skills (e.g., code generation),
+            and example models it might support.
+        """
+        return {
+            "description": "Agent for deep reasoning, complex problem solving, and code generation/analysis using DeepSeek AI models.",
+            "capabilities": ["text_generation", "code_generation", "code_analysis", "complex_reasoning", "problem_solving"],
+            "models_supported": ["deepseek-coder", "deepseek-llm"] # Example models, actual list may vary
+        }
+
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Processes a query using the DeepSeek API (typically a chat completions endpoint).
+
+        Constructs a payload with system and user messages, then uses the `APIManager`
+        to make an asynchronous API call. It parses the response to extract the
+        generated content and other relevant information like finish reason and token usage.
+
+        Args:
+            query_data: A dictionary containing query details. Expected keys:
+                        - "prompt" (str): The user's actual query or instruction. Mandatory.
+                        - "system_prompt" (Optional[str]): A custom system prompt. If not provided,
+                                                           the agent's default or a generic one is used.
+                        - "max_tokens" (Optional[int]): Override default max tokens for this query.
+                        - "temperature" (Optional[float]): Override default temperature for this query.
+                        - Other API-specific parameters can also be included here if supported by APIManager.
+
+        Returns:
+            A dictionary with:
+            - "status" (str): "success" or "error".
+            - "content" (str, optional): The textual content of the AI's response.
+            - "message" (str, optional): Error message if an error occurred.
+            - "details" (Any, optional): Additional error details.
+            - "finish_reason" (str, optional): Reason the model stopped generating.
+            - "usage" (Dict, optional): Token usage data.
         """
         user_prompt = query_data.get("prompt")
-        if not user_prompt:
-            self.logger.error("User prompt is missing in query_data.")
+        if not user_prompt: # Validate prompt presence
+            self.logger.error("User prompt is missing in query_data for DeepSeekAgent.")
             return {"status": "error", "message": "User prompt missing"}
 
-        # Determine system prompt: use query-specific, then config default, then a generic default.
-        default_system_prompt_from_config = self.config.get("default_system_prompt", "You are a helpful AI assistant specialized in coding and complex problem-solving.")
-        system_prompt = query_data.get("system_prompt", default_system_prompt_from_config)
+        # Determine the system prompt: query override > agent config default > generic default.
+        default_system_prompt = self.config.get("default_system_prompt",
+                                                "You are a helpful AI assistant specialized in coding and complex problem-solving. Provide clear and efficient solutions.")
+        system_prompt_to_use = query_data.get("system_prompt", default_system_prompt)
 
-        self.logger.info(f"Processing query for DeepSeekAgent '{self.agent_name}' with prompt: '{user_prompt[:100]}...'")
+        self.logger.info(f"Processing query for DeepSeekAgent '{self.agent_name}' using model '{self.model}'. Prompt (first 100 chars): '{user_prompt[:100]}...'")
 
-        payload = {
+        # Construct the payload for DeepSeek's chat completions format.
+        messages: List[Dict[str,str]] = [
+            {"role": "system", "content": system_prompt_to_use},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 4096)), # Allow query-time override
-            "temperature": query_data.get("temperature", self.config.get("temperature", 0.3)), # Allow query-time override
+            "messages": messages,
+            "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 4096)),
+            "temperature": query_data.get("temperature", self.config.get("temperature", 0.3)),
             # Other parameters like 'stream', 'top_p' can be added here from config or query_data
+            # Example: "top_p": query_data.get("top_p", self.config.get("top_p", 0.9))
         }
         
-        self.logger.debug(f"DeepSeek API payload: {payload}")
+        self.logger.debug(f"DeepSeek API request payload: {payload}")
 
-        # Make the API call via APIManager
-        # Assuming 'deepseek' is a configured service in APIManager
-        # and 'chat/completions' is the correct endpoint.
-        response_data = await self.api_manager.make_request( # Changed to await
+        # Make the API call via APIManager.
+        # 'deepseek' service must be configured in APIManager.
+        # 'chat/completions' is a common endpoint for this type of model.
+        response_data = await self.api_manager.make_request(
             service_name='deepseek',
             endpoint='chat/completions',
             method="POST",
             data=payload
         )
 
-        # Handle the response from APIManager
+        # Handle errors from APIManager or the API itself.
         if response_data.get("error"):
-            self.logger.error(f"API request failed for DeepSeek: {response_data.get('message', response_data.get('error'))}")
+            self.logger.error(f"API request to DeepSeek failed: {response_data.get('message', response_data.get('error'))}")
             return {
                 "status": "error",
                 "message": f"API request failed: {response_data.get('message', response_data.get('error'))}",
-                "details": response_data.get("content", response_data) # Include more details if available
+                "details": response_data.get("content", response_data)
             }
 
-        # Extract the relevant text from DeepSeek's response
+        # Parse the successful response from DeepSeek.
         try:
-            # Typical DeepSeek API response structure:
-            # { "choices": [ { "index": 0, "message": { "role": "assistant", "content": "response text" }, "finish_reason": "stop" } ] ... }
-            extracted_text = response_data.get("choices", [{}])[0].get("message", {}).get("content")
-            finish_reason = response_data.get("choices", [{}])[0].get("finish_reason")
+            # Typical DeepSeek/OpenAI-compatible API response structure:
+            # { "choices": [ { "index": 0, "message": { "role": "assistant", "content": "response text" }, "finish_reason": "stop" } ], ... }
+            choices = response_data.get("choices")
+            if not choices or not isinstance(choices, list) or not choices[0]:
+                self.logger.error(f"Invalid or empty 'choices' field in DeepSeek response. Response: {str(response_data)[:500]}")
+                return {"status": "error", "message": "Invalid response structure from DeepSeek API (no choices)."}
+
+            first_choice = choices[0]
+            message_content = first_choice.get("message", {}).get("content")
+            finish_reason = first_choice.get("finish_reason")
             
-            if extracted_text is None:
-                self.logger.error(f"Failed to extract content from DeepSeek response. Response: {response_data}")
-                return {"status": "error", "message": "Invalid response structure from DeepSeek API."}
+            if message_content is None: # Check if content is missing
+                self.logger.error(f"No 'content' found in the first choice of DeepSeek response. Response: {str(response_data)[:500]}")
+                return {"status": "error", "message": "No content in DeepSeek response message."}
 
             self.logger.info(f"Successfully received and parsed response from DeepSeek for prompt: '{user_prompt[:100]}...'")
+            # Return structured success response
             return {
                 "status": "success",
-                "content": extracted_text,
+                "content": message_content,
                 "finish_reason": finish_reason,
-                "usage": response_data.get("usage") # Include token usage if available
+                "usage": response_data.get("usage") # Include token usage info if available
             }
-        except (IndexError, KeyError, TypeError) as e:
-            self.logger.error(f"Error parsing DeepSeek response: {e}. Response data: {response_data}")
+        except (IndexError, KeyError, TypeError) as e: # Catch parsing errors
+            self.logger.error(f"Error parsing DeepSeek response: {e}. Response data (first 500 chars): {str(response_data)[:500]}", exc_info=True)
             return {"status": "error", "message": f"Error parsing DeepSeek response: {e}"}
 
 

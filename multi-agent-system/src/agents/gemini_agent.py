@@ -1,18 +1,25 @@
 # src/agents/gemini_agent.py
-"""Specialized agent for interacting with Google's Gemini AI models."""
+"""
+Specialized agent for interacting with Google's Gemini AI models.
 
-import asyncio # Added
-from typing import Dict, Any, Optional, List
+This agent uses the `google-generativeai` SDK to communicate with Gemini models,
+supporting both text and multimodal inputs. It handles API key configuration,
+model instantiation, and processing of responses, including safety feedback.
+"""
+
+import asyncio
+from typing import Dict, Any, Optional, List, Union # Added Union for type hinting
 
 try:
     from .base_agent import BaseAgent
-    from ..utils.api_manager import APIManager # For constructor consistency, though not directly used for API calls
-    from ..utils.logger import get_logger # BaseAgent provides self.logger, but direct import can be fallback
+    # APIManager is imported for constructor type consistency, though GeminiAgent uses the SDK directly for calls.
+    from ..utils.api_manager import APIManager
+    from ..utils.logger import get_logger
 except ImportError:
     # Fallback for direct script execution or import issues
     import sys
     import os
-    import asyncio # Added for fallback scenario
+    import asyncio
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -21,210 +28,278 @@ except ImportError:
     from src.utils.logger import get_logger # type: ignore
 
 
-# Attempt to import Google Generative AI SDK
+# Attempt to import Google Generative AI SDK and its specific types.
+# If the SDK is not installed, `genai` will be None, and the agent will fail to initialize.
 try:
     import google.generativeai as genai
-    from google.generativeai.types import HarmCategory, HarmBlockThreshold, GenerationConfigDict, ContentDict
-    # For older versions, ContentDict might not exist, parts are just dicts.
+    # Import specific types for configuration and response handling.
+    # ContentDict and GenerationConfigDict might be just Dict for older SDK versions.
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold, GenerationConfigDict, ContentDict, PartType
 except ImportError:
-    genai = None # type: ignore 
-    HarmCategory = None # type: ignore
-    HarmBlockThreshold = None # type: ignore
-    GenerationConfigDict = Dict # type: ignore # Fallback type
-    ContentDict = Dict # type: ignore # Fallback type
-    # Log this issue if logger is available at module load time (it isn't easily)
-    # print("ERROR: google-generativeai SDK not installed. GeminiAgent will not function.")
+    genai = None
+    HarmCategory = None
+    HarmBlockThreshold = None
+    GenerationConfigDict = Dict # type: ignore # Fallback type if SDK types are unavailable
+    ContentDict = Dict # type: ignore        # Fallback type
+    PartType = Any # type: ignore             # Fallback type
+    # A warning will be logged during GeminiAgent instantiation if `genai` is None.
 
 
 class GeminiAgent(BaseAgent):
     """
-    An agent that utilizes Google's Gemini models for multimodal understanding,
-    data analysis, text generation, and other advanced tasks.
+    An agent that utilizes Google's Gemini models for various tasks, including
+    multimodal understanding (text, images), data analysis, text generation,
+    and potentially function calling and chat functionalities.
+
+    This agent directly uses the `google-generativeai` Python SDK for its operations.
     """
 
     def __init__(self, agent_name: str, api_manager: APIManager, config: Optional[Dict[str, Any]] = None):
         """
         Initializes the GeminiAgent.
 
+        This involves setting up the API key for the Google Generative AI SDK,
+        configuring the generative model with specified or default parameters
+        (model name, generation config, safety settings, system instructions).
+
         Args:
-            agent_name: The name of the agent.
-            api_manager: An instance of APIManager (kept for constructor consistency).
-            config: Optional configuration dictionary for the agent.
-                    Expected keys: "api_key", "model", "generation_config", 
-                                   "safety_settings", "default_system_instruction".
+            agent_name: The user-defined name for this agent instance.
+            api_manager: An instance of `APIManager`. While GeminiAgent uses the SDK directly
+                         for its core API calls, APIManager might be used for other utility
+                         API calls or is kept for constructor consistency across agents.
+            config: Optional configuration dictionary for the agent. Expected keys:
+                    - "api_key" (str, Optional): Gemini API key. If not provided, attempts to use `GEMINI_API_KEY` env var.
+                    - "model" (str, Optional): The specific Gemini model to use (e.g., "gemini-1.5-flash-latest").
+                    - "generation_config" (Dict, Optional): Dictionary for `genai.GenerationConfig`.
+                                                            Example: `{"temperature": 0.7, "max_output_tokens": 2048}`.
+                    - "safety_settings" (List[Dict], Optional): Configuration for content safety.
+                                                               Example: `[{"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                                                          "threshold": HarmBlockThreshold.BLOCK_NONE}]`.
+                    - "default_system_instruction" (str, Optional): A default system instruction for the model.
+
+        Raises:
+            ImportError: If the `google-generativeai` SDK is not installed.
+            ValueError: If the Gemini API key is not found in config or environment variables.
+            ConnectionError: If SDK configuration with the API key fails.
+            RuntimeError: If the `genai.GenerativeModel` instantiation fails.
         """
         super().__init__(agent_name, config)
-        self.api_manager = api_manager # Stored for consistency, not used for SDK calls
+        self.api_manager = api_manager # Stored for potential utility use, though core calls use SDK.
 
-        if genai is None:
-            self.logger.error("google-generativeai SDK is not installed. GeminiAgent cannot function.")
-            raise ImportError("google-generativeai SDK not found. Please install it to use GeminiAgent.")
+        if genai is None: # Check if the SDK was imported successfully
+            self.logger.error("Fatal: google-generativeai SDK is not installed. GeminiAgent cannot function.")
+            raise ImportError("google-generativeai SDK not found. Please install it to use GeminiAgent (e.g., `pip install google-generativeai`).")
 
-        self.api_key = self.config.get("api_key")
+        # Configure API Key: from config file or environment variable.
+        self.api_key: Optional[str] = self.config.get("api_key")
         if not self.api_key:
             env_api_key = os.getenv("GEMINI_API_KEY")
             if env_api_key:
                 self.api_key = env_api_key
                 self.logger.info("Loaded Gemini API key from GEMINI_API_KEY environment variable.")
             else:
-                self.logger.error("Gemini API key not found in config or GEMINI_API_KEY environment variable.")
-                raise ValueError("Gemini API key missing. Provide it in agent config or as GEMINI_API_KEY env variable.")
+                self.logger.error("Gemini API key not found in agent configuration or GEMINI_API_KEY environment variable.")
+                raise ValueError("Gemini API key missing. Provide it in agent config (api_key) or as GEMINI_API_KEY environment variable.")
         
         try:
-            genai.configure(api_key=self.api_key)
-        except Exception as e:
-            self.logger.error(f"Failed to configure Gemini SDK: {e}")
+            genai.configure(api_key=self.api_key) # Configure the SDK globally with the API key.
+        except Exception as e: # Catch potential errors during SDK configuration.
+            self.logger.error(f"Failed to configure Gemini SDK with API key: {e}", exc_info=True)
             raise ConnectionError(f"Failed to configure Gemini SDK: {e}")
 
-        self.model_name = self.config.get("model", "gemini-1.5-flash-latest")
+        # Set model name, generation config, safety settings, and system instruction.
+        self.model_name: str = self.config.get("model", "gemini-1.5-flash-latest") # Default model
         
-        # Default generation config
-        default_gen_config: GenerationConfigDict = { # type: ignore
-            "temperature": 0.7, "top_p": 1.0, "top_k": 1, "max_output_tokens": 2048 
+        # Default generation configuration (can be overridden by agent config)
+        default_gen_config: GenerationConfigDict = {
+            "temperature": 0.7,
+            "top_p": 1.0,       # Nucleus sampling parameter
+            "top_k": 1,         # Top-k sampling parameter
+            "max_output_tokens": 2048
         }
-        # Merge with user-provided config
         user_gen_config = self.config.get("generation_config", {})
-        self.generation_config: GenerationConfigDict = {**default_gen_config, **user_gen_config} # type: ignore
+        self.generation_config: GenerationConfigDict = {**default_gen_config, **user_gen_config}
         
-        # Default safety settings
-        default_safety_settings = [
+        # Default safety settings (blocks harmful content at medium threshold)
+        # These can be overridden by agent config. For less restrictive settings,
+        # use HarmBlockThreshold.BLOCK_NONE for relevant categories.
+        default_safety_settings: List[Dict[str, Any]] = [
             {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
             {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
             {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
             {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
         ]
-        self.safety_settings = self.config.get("safety_settings", default_safety_settings)
+        self.safety_settings: List[Dict[str, Any]] = self.config.get("safety_settings", default_safety_settings)
         
-        self.system_instruction = self.config.get("default_system_instruction") # Can be None
+        # System instruction for the model (can be None if not set)
+        self.system_instruction: Optional[str] = self.config.get("default_system_instruction")
 
+        # Instantiate the generative model from the SDK.
         try:
-            self.model = genai.GenerativeModel(
+            self.model: genai.GenerativeModel = genai.GenerativeModel(
                 model_name=self.model_name,
-                generation_config=self.generation_config, # type: ignore
-                safety_settings=self.safety_settings, # type: ignore
-                system_instruction=self.system_instruction if self.system_instruction else None 
+                generation_config=self.generation_config,
+                safety_settings=self.safety_settings,
+                system_instruction=self.system_instruction if self.system_instruction else None # Pass None if empty
             )
-        except Exception as e:
-            self.logger.error(f"Failed to instantiate Gemini GenerativeModel: {e}")
-            raise RuntimeError(f"Gemini model instantiation failed: {e}")
+        except Exception as e: # Catch errors during model instantiation
+            self.logger.error(f"Failed to instantiate Gemini GenerativeModel '{self.model_name}': {e}", exc_info=True)
+            raise RuntimeError(f"Gemini model instantiation failed for '{self.model_name}': {e}")
             
-        self.logger.info(f"GeminiAgent '{self.agent_name}' initialized with model '{self.model_name}'.")
+        self.logger.info(f"GeminiAgent '{self.agent_name}' initialized successfully with model '{self.model_name}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Describes the capabilities of the GeminiAgent.
         """
         return {
-            "description": "Agent for multimodal understanding, data analysis, and general queries using Google Gemini.",
-            "capabilities": ["text_generation", "multimodal_input", "data_analysis", "function_calling", "chat"],
-            "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro"] 
+            "description": "Agent for multimodal understanding (text, images), data analysis, text generation, function calling, and chat using Google Gemini models.",
+            "capabilities": ["text_generation", "multimodal_input", "data_analysis", "function_calling", "chat", "summarization"],
+            "models_supported": ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-1.0-pro", "gemini-pro-vision"] # Example models
         }
 
-    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Processes a query using the Gemini API.
+        Processes a query using the configured Gemini model via the SDK.
+
+        This method constructs the prompt content (which can be multimodal) and
+        makes an asynchronous call to the Gemini API using `model.generate_content_async`.
+        It handles responses, including potential safety blocks and errors.
 
         Args:
             query_data: A dictionary containing the query details.
                         Expected keys:
-                        - "prompt_parts" (List[Any]): A list of content parts for the prompt.
+                        - "prompt_parts" (List[Union[str, PartType]]): A list of content parts for the prompt.
                           For simple text, this can be `["your text query"]`.
-                          For multimodal, it can be `["text part", PIL.Image.open('image.jpg')]`.
-                        - "generation_config_override" (Optional[Dict]): Override model's generation config.
-                        - "safety_settings_override" (Optional[List[Dict]]): Override model's safety settings.
+                          For multimodal input (e.g., image and text), it could be
+                          `["Describe this image:", PIL.Image.open('image.jpg')]` or
+                          `["Describe this:", {"mime_type": "image/jpeg", "data": "<base64_encoded_image>"}]`.
+                          The items in the list should be compatible with the `contents`
+                          argument of `genai.GenerativeModel.generate_content_async`.
+                        - "generation_config_override" (Optional[Dict]): Overrides the model's default
+                                                                        `generation_config` for this specific query.
+                        - "safety_settings_override" (Optional[List[Dict]]): Overrides the model's default
+                                                                            `safety_settings` for this query.
         Returns:
-            A dictionary containing the status of the operation and the response content or error message.
+            A dictionary containing:
+            - "status" (str): "success" or "error".
+            - "content" (str, optional): The primary textual content of Gemini's response, if successful and applicable.
+            - "full_response_parts_texts" (List[str], optional): List of texts from all parts of the response.
+            - "message" (str, optional): An error message, if an error occurred or content was blocked.
+            - "details" (str, optional): Additional details about errors or blocking.
+            - "finish_reason" (str, optional): The reason the model stopped generating (e.g., "STOP", "MAX_TOKENS", "SAFETY").
+            - "safety_ratings" (List[str], optional): Safety ratings for the response candidates.
+            - "raw_response_obj_str" (str, optional): A truncated string representation of the raw SDK response object for debugging.
         """
-        if genai is None: # Should have been caught in __init__ but good to double check
-             self.logger.error("Gemini SDK not available for process_query.")
-             return {"status": "error", "message": "Gemini SDK not installed."}
+        if genai is None: # Should have been caught in __init__, but as a safeguard
+             self.logger.error("Gemini SDK not available for process_query. This should not happen if initialization succeeded.")
+             return {"status": "error", "message": "Gemini SDK not installed or failed to import."}
 
-        user_prompt_parts = query_data.get("prompt_parts")
+        user_prompt_parts: Optional[List[Any]] = query_data.get("prompt_parts")
+        # Validate prompt_parts: must be a list and the first part should not be empty/None (basic check)
         if not user_prompt_parts or not isinstance(user_prompt_parts, list) or not user_prompt_parts[0]:
-            self.logger.error("User 'prompt_parts' are missing, not a list, or empty in query_data.")
-            return {"status": "error", "message": "Valid 'prompt_parts' (list) missing or empty."}
+            self.logger.error("User 'prompt_parts' are missing, not a list, or the first part is empty in query_data for GeminiAgent.")
+            return {"status": "error", "message": "Valid 'prompt_parts' (list with non-empty first part) missing."}
 
+        # Get overrides for generation config and safety settings for this specific query
         generation_config_override = query_data.get("generation_config_override")
         safety_settings_override = query_data.get("safety_settings_override")
 
-        # For logging, convert parts to string carefully
-        log_prompt = []
+        # Log a summary of the prompt being sent
+        log_prompt_summary_parts = []
         for part in user_prompt_parts:
             if isinstance(part, str):
-                log_prompt.append(part[:100] + "..." if len(part) > 100 else part)
-            else:
-                log_prompt.append(f"<{type(part).__name__}>")
-        self.logger.info(f"Sending query to Gemini ({self.model_name}): {', '.join(log_prompt)}")
+                log_prompt_summary_parts.append(part[:100] + "..." if len(part) > 100 else part)
+            elif hasattr(part, 'mime_type'): # For SDK PartType objects or dicts with mime_type
+                log_prompt_summary_parts.append(f"<MediaPart: {getattr(part, 'mime_type', 'unknown_mime_type')}>")
+            else: # Fallback for other types (e.g., PIL Images)
+                log_prompt_summary_parts.append(f"<{type(part).__name__}>")
+        self.logger.info(f"Sending query to Gemini model '{self.model_name}'. Prompt summary: {', '.join(log_prompt_summary_parts)}")
 
         try:
-            # Use current model's settings unless overrides are provided
+            # Determine effective generation_config and safety_settings for this call
             current_gen_config = generation_config_override if generation_config_override else self.model.generation_config
             current_safety_settings = safety_settings_override if safety_settings_override else self.model.safety_settings
             
-            # The SDK's generate_content method takes generation_config and safety_settings directly.
-            response = await self.model.generate_content_async( # Changed to generate_content_async
-                contents=user_prompt_parts, # type: ignore
-                generation_config=current_gen_config, # type: ignore
-                safety_settings=current_safety_settings # type: ignore
-                # stream=False by default
+            # Make the asynchronous API call using the SDK
+            response = await self.model.generate_content_async(
+                contents=user_prompt_parts,       # Prompt content (list of parts)
+                generation_config=current_gen_config,
+                safety_settings=current_safety_settings
+                # stream=False is the default for generate_content_async
             )
             
-            # response.text provides concatenated text from all parts if successful
-            # If there's a finish_reason like SAFETY, response.text might raise an error.
-            # It's safer to check prompt_feedback first.
+            # Check for prompt feedback indicating blocking *before* trying to access `response.text`.
+            # `response.prompt_feedback` exists if the prompt itself was blocked.
             if response.prompt_feedback and response.prompt_feedback.block_reason:
-                self.logger.warning(f"Gemini prompt blocked due to: {response.prompt_feedback.block_reason}")
+                block_reason_str = response.prompt_feedback.block_reason.name # Get enum name
+                self.logger.warning(f"Gemini prompt was blocked due to: {block_reason_str}. "
+                                    f"Safety ratings: {response.prompt_feedback.safety_ratings}")
                 return {
                     "status": "error", 
-                    "message": f"Prompt blocked by Gemini due to {response.prompt_feedback.block_reason}",
-                    "details": str(response.prompt_feedback)
+                    "message": f"Prompt blocked by Gemini due to {block_reason_str}",
+                    "details": str(response.prompt_feedback) # String representation of PromptFeedback object
                 }
 
-            # If not blocked, try to access response.text
-            # This might fail if the response was stopped for safety reasons related to *candidates*
+            # If the prompt was not blocked, try to access `response.text`.
+            # This can raise a ValueError if the *generated content* was blocked (e.g., due to safety settings on candidates).
+            extracted_text: str
             try:
-                extracted_text = response.text
-            except ValueError as ve: # Often indicates content blocked in candidates
-                 self.logger.warning(f"Gemini content generation potentially blocked or empty: {ve}")
-                 # Check candidates for details
-                 blocked_details = []
-                 for cand in response.candidates:
-                     if cand.finish_reason.name != "STOP": # Not a normal stop
-                         blocked_details.append(f"Candidate finish reason: {cand.finish_reason.name}, Safety Ratings: {cand.safety_ratings}")
+                extracted_text = response.text # Concatenates text from all parts, if available and not blocked.
+            except ValueError as ve: # This ValueError often indicates that content in candidates was blocked.
+                 self.logger.warning(f"Gemini content generation potentially blocked or response empty. SDK raised ValueError: {ve}")
+                 # Inspect candidates for more detailed blocking reasons
+                 blocked_candidate_details: List[str] = []
+                 if response.candidates: # Check if there are candidates
+                     for cand_idx, cand in enumerate(response.candidates):
+                         if cand.finish_reason != genai.types.FinishReason.STOP: # Check if not a normal stop
+                             reason_name = cand.finish_reason.name if cand.finish_reason else "UNKNOWN_REASON"
+                             ratings_str = ", ".join([f"{sr.category.name}: {sr.probability.name}" for sr in cand.safety_ratings])
+                             blocked_candidate_details.append(
+                                 f"Candidate {cand_idx} finish_reason: {reason_name}. SafetyRatings: [{ratings_str}]"
+                             )
                  return {
                      "status": "error",
-                     "message": f"Content generation issue: {ve}",
-                     "details": "; ".join(blocked_details) if blocked_details else "No specific block details in candidates."
+                     "message": f"Content generation issue or blocked content: {ve}",
+                     "details": "; ".join(blocked_candidate_details) if blocked_candidate_details else "No specific block details found in candidates, or response was empty."
                  }
 
-
-            self.logger.info(f"Successfully received response from Gemini.")
+            self.logger.info(f"Successfully received response from Gemini model '{self.model_name}'.")
             
-            # Construct a more detailed response if needed
-            response_parts_str = []
-            if response.parts:
+            # Extract text from all parts of the response for more detailed output if needed.
+            response_parts_texts: List[str] = []
+            if response.parts: # `response.parts` gives access to individual content parts
                 for part in response.parts:
-                    if hasattr(part, 'text'):
-                        response_parts_str.append(part.text)
-                    elif hasattr(part, 'function_call'):
-                        response_parts_str.append(f"FunctionCall: {part.function_call.name}")
-                    # Add more part types as needed (e.g., blob for file data)
+                    if hasattr(part, 'text') and part.text:
+                        response_parts_texts.append(part.text)
+                    elif hasattr(part, 'function_call'): # Handle function calls if they occur
+                        response_parts_texts.append(f"FunctionCall: name='{part.function_call.name}', args={part.function_call.args}")
+                    # Could add handling for other part types like 'blob' if expecting file data.
             
+            # Determine finish reason and safety ratings from the first candidate (most relevant one).
+            finish_reason_name = "UNKNOWN"
+            safety_ratings_str_list: List[str] = []
+            if response.candidates: # Response should have candidates
+                first_candidate = response.candidates[0]
+                finish_reason_name = first_candidate.finish_reason.name if first_candidate.finish_reason else "UNKNOWN"
+                if first_candidate.safety_ratings:
+                    safety_ratings_str_list = [f"{sr.category.name}: {sr.probability.name}" for sr in first_candidate.safety_ratings]
+
             return {
                 "status": "success",
-                "content": extracted_text, # Main textual content
-                "full_response_parts_texts": response_parts_str, # List of texts from parts
-                "finish_reason": response.candidates[0].finish_reason.name if response.candidates else "UNKNOWN",
-                "safety_ratings": [str(sr) for sr in response.candidates[0].safety_ratings] if response.candidates else [],
-                "raw_response_obj_str": str(response)[:500] # For debugging, truncated
+                "content": extracted_text,  # Primary combined textual content
+                "full_response_parts_texts": response_parts_texts, # List of texts from all response parts
+                "finish_reason": finish_reason_name,
+                "safety_ratings": safety_ratings_str_list,
+                "raw_response_obj_str": str(response)[:500] # Truncated string of raw SDK response object for debugging
             }
-        except Exception as e:
-            self.logger.error(f"Gemini API call failed: {type(e).__name__} - {e}")
-            # Attempt to get more specific error details if it's a Google API error
-            if hasattr(e, 'message'): # google.api_core.exceptions often have a message
+
+        except Exception as e: # Catch any other unexpected errors during the SDK call or processing.
+            self.logger.error(f"Gemini API call or response processing failed: {type(e).__name__} - {e}", exc_info=True)
+            # Try to extract a more specific error message if it's a Google API core exception
+            error_message = str(e)
+            if hasattr(e, 'message') and isinstance(getattr(e, 'message'), str): # Common for google.api_core.exceptions
                 error_message = getattr(e, 'message')
-            else:
-                error_message = str(e)
             return {"status": "error", "message": error_message}
 
 

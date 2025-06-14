@@ -1,4 +1,4 @@
-# Cheating Daddy
+# Jefe
 
 > [!NOTE]  
 > Use latest MacOS and Windows version, older versions have limited support
@@ -6,16 +6,16 @@
 > [!NOTE]  
 > During testing it wont answer if you ask something, you need to simulate interviewer asking question, which it will answer
 
-A real-time AI assistant that provides contextual help during video calls, interviews, presentations, and meetings using screen capture and audio analysis.
+Jefe is a real-time AI assistant designed to enhance your productivity and communication. It provides contextual help during video calls, interviews, presentations, and meetings by leveraging screen capture and audio analysis to understand the ongoing interaction.
 
 ## Features
 
 - **Live AI Assistance**: Real-time help powered by Google Gemini 2.0 Flash Live
 - **Screen & Audio Capture**: Analyzes what you see and hear for contextual responses
-- **Multiple Profiles**: Interview, Sales Call, Business Meeting, Presentation, Negotiation
+- **Multiple Profiles**: Interview, Sales Call, Business Meeting, Presentation, Negotiation, Jefe (Coding Asst.)
 - **Transparent Overlay**: Always-on-top window that can be positioned anywhere
 - **Click-through Mode**: Make window transparent to clicks when needed
-- **Cross-platform**: Works on macOS, Windows, and Linux (kinda, dont use, just for testing rn)
+- **Cross-platform**: Works on macOS, Windows, and Linux (Linux support may vary for audio capture)
 
 ## Setup
 
@@ -29,7 +29,7 @@ A real-time AI assistant that provides contextual help during video calls, inter
 2. Choose your profile and language in settings
 3. Click "Start Session" to begin
 4. Position the window using keyboard shortcuts
-5. The AI will provide real-time assistance based on your screen and what interview asks
+5. The AI will provide real-time assistance based on your screen content and audio input, tailored to the selected profile.
 
 ## Keyboard Shortcuts
 
@@ -40,9 +40,9 @@ A real-time AI assistant that provides contextual help during video calls, inter
 
 ## Audio Capture
 
-- **macOS**: [SystemAudioDump](https://github.com/Mohammed-Yasin-Mulla/Sound) for system audio 
+- **macOS**: [SystemAudioDump](https://github.com/Mohammed-Yasin-Mulla/Sound) for system audio (Bundled)
 - **Windows**: Loopback audio capture
-- **Linux**: Microphone input
+- **Linux**: Microphone input (System audio capture might require additional setup)
 
 ## Requirements
 

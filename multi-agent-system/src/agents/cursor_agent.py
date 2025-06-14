@@ -1,17 +1,26 @@
 # src/agents/cursor_agent.py
-"""Specialized agent for interacting with Cursor AI, focusing on code generation and editing."""
+"""
+Specialized agent for interacting with a hypothetical Cursor AI,
+focusing on code generation, editing, and other programming-related tasks.
 
-import asyncio # Added
-from typing import Dict, Any, Optional
+Note: As the actual Cursor API details are not publicly available (as of the
+time of this writing), this agent is based on a speculative API structure.
+Its functionality is for demonstration and would require significant adjustments
+to work with a real Cursor API.
+"""
+
+import asyncio
+from typing import Dict, Any, Optional, List # Added List for type hinting
 
 try:
     from .base_agent import BaseAgent
     from ..utils.api_manager import APIManager
+    # Logger is inherited from BaseAgent.
 except ImportError:
     # Fallback for direct script execution or import issues
     import sys
     import os
-    import asyncio # Added for fallback scenario
+    import asyncio
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -20,10 +29,12 @@ except ImportError:
 
 class CursorAgent(BaseAgent):
     """
-    An agent that utilizes Cursor AI for tasks like code generation,
-    refactoring, and other programming-related activities.
-    Note: The actual Cursor API details are speculative as of this implementation.
-    This agent is based on a hypothetical API structure.
+    An agent designed to utilize a hypothetical Cursor AI for tasks like
+    code generation, refactoring, and other programming-related activities.
+
+    The implementation assumes a generic API interaction pattern where prompts
+    and parameters are sent to a Cursor endpoint, and a textual or structured
+    code response is received.
     """
 
     def __init__(self, agent_name: str, api_manager: APIManager, config: Optional[Dict[str, Any]] = None):
@@ -31,138 +42,155 @@ class CursorAgent(BaseAgent):
         Initializes the CursorAgent.
 
         Args:
-            agent_name: The name of the agent.
-            api_manager: An instance of APIManager to handle API calls.
+            agent_name: The user-defined name for this agent instance.
+            api_manager: An instance of `APIManager` to handle API calls.
             config: Optional configuration dictionary for the agent.
-                    Expected keys: "mode", "default_system_prompt", "model" (optional), 
-                                   "max_tokens", "temperature".
+                    Expected keys might include:
+                    - "model" (str): Specific Cursor model/version to use (e.g., "cursor-pro").
+                    - "mode" (str): Default operational mode (e.g., "code-generation", "edit-code", "chat").
+                    - "default_system_prompt" (str): A default system message for guiding the AI.
+                    - "max_tokens" (int): Default maximum tokens for the response.
+                    - "temperature" (float): Default sampling temperature.
         """
         super().__init__(agent_name, config)
-        self.api_manager = api_manager
+        self.api_manager = api_manager # For making API calls
         
-        self.model_mode = self.config.get("mode", "code-generation") # e.g., "code-generation", "edit-code", "chat"
-        self.model = self.config.get("model", "cursor-default") # Hypothetical model name
-        self.default_system_prompt = self.config.get(
+        # Set default operational mode and model from config, or use placeholders.
+        self.model_mode: str = self.config.get("mode", "code-generation")
+        self.model: str = self.config.get("model", "cursor-default") # Hypothetical model name
+        self.default_system_prompt: str = self.config.get(
             "default_system_prompt", 
-            "You are an AI programming assistant. Follow the user's requirements carefully and to the letter."
+            "You are an AI programming assistant. Follow the user's requirements carefully and to the letter. Prioritize correctness and clarity in your code."
         )
-        self.logger.info(f"CursorAgent '{self.agent_name}' initialized with mode '{self.model_mode}' and model '{self.model}'.")
+        self.logger.info(f"CursorAgent '{self.agent_name}' initialized. Default mode: '{self.model_mode}', Model: '{self.model}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Describes the capabilities of the CursorAgent.
+
+        Returns:
+            A dictionary outlining the agent's description, primary capabilities
+            (e.g., code generation, refactoring), and example supported modes.
         """
         return {
             "description": "Agent for code generation, refactoring, and programming tasks using a hypothetical Cursor AI.",
-            "capabilities": ["code_generation", "refactoring", "code_completion", "code_analysis", "code_editing"],
-            "modes_supported": ["code-generation", "edit-code", "chat"] # Example modes
+            "capabilities": ["code_generation", "refactoring", "code_completion", "code_analysis", "code_editing", "explain_code"],
+            "modes_supported": ["code-generation", "edit-code", "chat", "explain_code"] # Example modes
         }
 
-    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Processes a query using the (hypothetical) Cursor API.
 
-        Args:
-            query_data: A dictionary containing the query details.
-                        Expected keys:
-                        - "prompt" (str): The user's actual query or code context.
-                        - "system_prompt" (Optional[str]): Custom system prompt for this query.
-                        - "mode" (Optional[str]): Override the agent's default mode.
-                        - Other potential keys: "code_to_edit", "cursor_position", etc.
+        Constructs a payload based on the query data, including prompt, system prompt,
+        mode, and other potential Cursor-specific parameters. It then uses the
+        `APIManager` to make the API call and parses the response.
 
+        Args:
+            query_data: A dictionary containing the query details. Expected keys:
+                        - "prompt" (str): The user's main query, code snippet, or instruction. Mandatory.
+                        - "system_prompt" (Optional[str]): A custom system prompt to override the default.
+                        - "mode" (Optional[str]): Overrides the agent's default operational mode for this query.
+                        - "code_context" (Optional[str]): Existing code to provide context for generation or editing.
+                        - "file_path" (Optional[str]): Path to the relevant file, if applicable.
+                        - "selection" (Optional[Dict]): Information about selected code (e.g., line numbers).
+                        - "max_tokens" (Optional[int]): Override default max tokens for the response.
+                        - "temperature_override" (Optional[float]): Override default temperature.
         Returns:
-            A dictionary containing the status of the operation and the response content or error message.
+            A dictionary containing:
+            - "status" (str): "success" or "error".
+            - "content" (str, optional): The primary textual or code content of the response.
+            - "message" (str, optional): An error message, if an error occurred.
+            - "details" (Any, optional): Additional details from the API error response.
+            - "raw_response" (Dict, optional): The full, raw response from the API for debugging.
         """
         user_query = query_data.get("prompt")
-        if not user_query: # A prompt or some form of input is essential
-            self.logger.error("User query/prompt is missing in query_data.")
+        if not user_query: # A prompt or some primary input is essential
+            self.logger.error("User query/prompt is missing in query_data for CursorAgent.")
             return {"status": "error", "message": "User query/prompt missing"}
 
-        system_prompt_override = query_data.get("system_prompt")
-        system_prompt_to_use = system_prompt_override if system_prompt_override is not None else self.default_system_prompt
-        
+        # Determine system prompt and operational mode, using overrides or defaults.
+        system_prompt_to_use = query_data.get("system_prompt", self.default_system_prompt)
         current_mode = query_data.get("mode", self.model_mode)
 
-        self.logger.info(f"Processing query for CursorAgent '{self.agent_name}' (mode: {current_mode}) with query: '{user_query[:100]}...'")
+        self.logger.info(f"Processing query for CursorAgent '{self.agent_name}' (mode: {current_mode}). Query (first 100 chars): '{user_query[:100]}...'")
 
-        # Constructing the prompt for Cursor.
-        # This is speculative. A real Cursor API might have structured inputs for messages, code, etc.
-        # For now, we'll assume a combined text prompt for simplicity, similar to some older APIs.
-        # Or, if the API expects a messages array like OpenAI:
-        # messages = [
-        #    {"role": "system", "content": system_prompt_to_use},
-        #    {"role": "user", "content": user_query}
-        # ]
-        # payload["messages"] = messages
-        # For now, using a single "prompt" field with combined text:
-        
-        # If the API is more like OpenAI/Claude with a messages structure:
-        # messages = [{"role": "system", "content": system_prompt_to_use}, {"role": "user", "content": user_query}]
-        # payload = {"messages": messages, "model": self.model, ...}
-        # However, the original subtask description implied a single "prompt" field.
-        # Let's stick to that for now and assume the API handles it.
-        full_prompt = f"{system_prompt_to_use}\n\nUser Query:\n{user_query}"
-        if query_data.get("code_context"): # Example of adding more context
-            full_prompt += f"\n\nExisting Code Context:\n{query_data.get('code_context')}"
+        # Construct the full prompt for the Cursor API.
+        # This is speculative; a real API might prefer a structured "messages" array.
+        # For now, we combine system prompt, user query, and any code context into a single string.
+        full_prompt_parts: List[str] = []
+        if system_prompt_to_use: # Only add system prompt if it's non-empty
+            full_prompt_parts.append(system_prompt_to_use)
+        full_prompt_parts.append(f"User Query:\n{user_query}")
 
+        if query_data.get("code_context"): # Append existing code context if provided
+            full_prompt_parts.append(f"\n\nExisting Code Context:\n{query_data.get('code_context')}")
 
+        full_prompt = "\n\n".join(full_prompt_parts)
+
+        # Prepare the payload for the Cursor API.
         payload: Dict[str, Any] = {
-            "prompt": full_prompt, # This is based on the subtask's structure.
-            "model": self.model, # Model to use, if applicable to Cursor API
-            "mode": current_mode, 
-            "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 2048)),
+            "prompt": full_prompt,    # The combined prompt text.
+            "model": self.model,      # Specified model for Cursor.
+            "mode": current_mode,     # Operational mode (e.g., generate, edit).
+            "max_tokens": query_data.get("max_tokens", self.config.get("max_tokens", 2048)), # Max response tokens.
         }
         
-        if self.config.get("temperature") is not None:
+        # Apply temperature settings (config default or query-time override).
+        # Temperature controls the randomness/creativity of the output.
+        temperature_override = query_data.get("temperature_override")
+        if temperature_override is not None:
+            payload["temperature"] = temperature_override
+        elif self.config.get("temperature") is not None:
             payload["temperature"] = self.config.get("temperature")
-        if query_data.get("temperature_override") is not None: # Allow query-time override
-            payload["temperature"] = query_data.get("temperature_override")
 
-        # Cursor specific parameters (hypothetical)
+        # Add any other hypothetical Cursor-specific parameters from query_data.
         if query_data.get("file_path"):
             payload["file_path"] = query_data.get("file_path")
-        if query_data.get("selection"): # e.g., line numbers or character offsets for edits
+        if query_data.get("selection"): # E.g., for code editing context.
             payload["selection"] = query_data.get("selection")
 
+        self.logger.debug(f"Cursor API request payload: {payload}")
 
-        self.logger.debug(f"Cursor API payload: {payload}")
-
-        # Make the API call via APIManager. Endpoint 'compose' or similar.
-        # The service name 'cursor' must be configured in APIManager.
-        response_data = await self.api_manager.make_request( # Changed to await
+        # Make the API call using APIManager.
+        # 'cursor' is the service name configured in APIManager.
+        # 'compose' is a hypothetical endpoint for Cursor (e.g., /v1/compose or /v1/generate).
+        response_data = await self.api_manager.make_request(
             service_name='cursor', 
-            endpoint='compose', # Hypothetical endpoint, e.g., /v1/compose
+            endpoint='compose',
             method="POST",
             data=payload
         )
 
+        # Handle errors returned by APIManager (e.g., network, HTTP status codes).
         if response_data.get("error"):
-            self.logger.error(f"API request failed for Cursor: {response_data.get('message', response_data.get('error'))}")
+            self.logger.error(f"API request to Cursor failed: {response_data.get('message', response_data.get('error'))}")
             return {
                 "status": "error",
                 "message": f"API request failed: {response_data.get('message', response_data.get('error'))}",
-                "details": response_data.get("content", response_data)
+                "details": response_data.get("content", response_data) # Include error details if available
             }
 
+        # Try to parse the successful response from Cursor.
+        # This part is highly speculative due to the unknown nature of a real Cursor API.
         try:
-            # Assuming Cursor API response might have a "response" or "generated_code" field.
-            # This is highly speculative.
+            # Attempt to extract content from common possible fields in an API response.
             extracted_content = response_data.get("response", response_data.get("generated_code"))
-            if extracted_content is None: # Check for other common fields if primary ones are missing
+            if extracted_content is None: # Fallback to other common fields
                 extracted_content = response_data.get("text", response_data.get("completion"))
 
-            if extracted_content is None:
-                self.logger.error(f"Failed to extract content from Cursor response. Response: {response_data}")
-                return {"status": "error", "message": "Invalid response structure from Cursor API."}
+            if extracted_content is None: # If no content found after checking common fields
+                self.logger.error(f"Failed to extract meaningful content from Cursor response. Response (first 300 chars): {str(response_data)[:300]}")
+                return {"status": "error", "message": "Invalid or empty response structure from Cursor API."}
 
             self.logger.info(f"Successfully received and parsed response from Cursor for query: '{user_query[:100]}...'")
             return {
                 "status": "success",
-                "content": extracted_content,
-                "raw_response": response_data # Optionally include the full response
+                "content": extracted_content, # The primary content (e.g., generated code, explanation)
+                "raw_response": response_data # Optionally include the full raw API response for debugging
             }
-        except Exception as e: # Broad exception for parsing if structure is unknown
-            self.logger.error(f"Error parsing Cursor response: {e}. Response data: {response_data}")
+        except Exception as e: # Broad exception for unexpected issues during parsing
+            self.logger.error(f"Error parsing Cursor response: {e}. Response data: {str(response_data)[:500]}", exc_info=True)
             return {"status": "error", "message": f"Error parsing Cursor response: {e}"}
 
 if __name__ == '__main__':

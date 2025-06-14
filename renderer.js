@@ -1,27 +1,44 @@
 // renderer.js
-const { ipcRenderer } = require('electron');
+// This script is executed in the Electron renderer process (the web page).
+// It handles user interactions, media capture (screen, audio), and communication with the main process via IPC.
 
-let mediaStream = null;
-let screenshotInterval = null;
-let audioContext = null;
-let audioProcessor = null;
-let micAudioProcessor = null;
-let audioBuffer = [];
-const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 0.1; // seconds
-const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
+const { ipcRenderer } = require('electron'); // Module to send messages to the main process
 
-let hiddenVideo = null;
-let offscreenCanvas = null;
-let offscreenContext = null;
+// --- Global variables for media capture and processing ---
+let mediaStream = null; // Holds the MediaStream object for screen and/or audio capture
+let screenshotInterval = null; // Timer for periodically capturing screenshots
+let audioContext = null; // Web Audio API AudioContext for processing audio
+let audioProcessor = null; // ScriptProcessorNode for handling audio data (primarily for Windows/Linux loopback/mic)
+let micAudioProcessor = null; // Separate audio processor if microphone input is handled distinctly (e.g. Linux)
+// let audioBuffer = []; // This global audioBuffer seems unused, local buffers are used in functions.
 
+const SAMPLE_RATE = 24000; // Desired sample rate for audio processing
+const AUDIO_CHUNK_DURATION = 0.1; // Duration of audio chunks to process (in seconds)
+const BUFFER_SIZE = 4096; // Buffer size for ScriptProcessorNode, affects latency and processing frequency
+
+// Variables for offscreen screenshot rendering
+let hiddenVideo = null; // Hidden <video> element to play the screen capture stream
+let offscreenCanvas = null; // Offscreen <canvas> for drawing video frames
+let offscreenContext = null; // 2D rendering context for the offscreen canvas
+
+// Platform detection flags
 const isLinux = process.platform === 'linux';
 const isMacOS = process.platform === 'darwin';
 
-function cheddarElement() {
-    return document.getElementById('cheddar');
+/**
+ * Gets a reference to the main custom element <jefe-app>.
+ * @returns {HTMLElement | null} The jefe-app element or null if not found.
+ */
+function jefeElement() {
+    return document.getElementById('jefe');
 }
 
+/**
+ * Converts a Float32Array (typically from Web Audio API) to an Int16Array (PCM data).
+ * This is often needed for audio formats expected by speech-to-text services.
+ * @param {Float32Array} float32Array - The input array with samples ranging from -1.0 to 1.0.
+ * @returns {Int16Array} The output array with PCM samples.
+ */
 function convertFloat32ToInt16(float32Array) {
     const int16Array = new Int16Array(float32Array.length);
     for (let i = 0; i < float32Array.length; i++) {
@@ -32,6 +49,11 @@ function convertFloat32ToInt16(float32Array) {
     return int16Array;
 }
 
+/**
+ * Converts an ArrayBuffer containing binary data to a Base64 encoded string.
+ * @param {ArrayBuffer} buffer - The ArrayBuffer to convert.
+ * @returns {string} The Base64 encoded string.
+ */
 function arrayBufferToBase64(buffer) {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -42,31 +64,77 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
+/**
+ * Initializes the Gemini AI session by sending API key and configuration to the main process.
+ * Updates the UI element's status based on success or failure.
+ * @param {string} [profile='interview'] - The selected user profile for AI interaction.
+ * @param {string} [language='en-US'] - The language for speech recognition.
+ */
 async function initializeGemini(profile = 'interview', language = 'en-US') {
-    const apiKey = localStorage.getItem('apiKey')?.trim();
+    const apiKey = localStorage.getItem('apiKey')?.trim(); // Get API key from local storage
     if (apiKey) {
+        // Invoke 'initialize-gemini' IPC handler in the main process
         const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', profile, language);
-        if (success) {
-            cheddar.e().setStatus('Live');
-        } else {
-            cheddar.e().setStatus('error');
+        const appElement = jefeElement();
+        if (appElement) {
+            if (success) {
+                appElement.setStatus('Live');
+            } else {
+                appElement.setStatus('Error: Gemini Init Failed');
+            }
         }
+    } else {
+        const appElement = jefeElement();
+        if (appElement) {
+            appElement.setStatus('Error: API Key Missing');
+        }
+        console.error("API Key is missing from local storage.");
     }
 }
 
-// Listen for status updates
+// --- IPC Event Listeners from Main Process ---
+
+// Listen for 'update-status' messages from the main process to update the UI.
 ipcRenderer.on('update-status', (event, status) => {
-    console.log('Status update:', status);
-    cheddar.e().setStatus(status);
+    console.log('Status update from main:', status);
+    const appElement = jefeElement();
+    if (appElement) {
+        appElement.setStatus(status);
+    }
 });
 
-// Listen for responses
+// Listen for 'update-response' messages from the main process (AI responses) to update the UI.
 ipcRenderer.on('update-response', (event, response) => {
-    console.log('Gemini response:', response);
-    cheddar.e().setResponse(response);
-    // You can add UI elements to display the response if needed
+    console.log('Gemini response from main:', response);
+    const appElement = jefeElement();
+    if (appElement) {
+        appElement.setResponse(response);
+    }
 });
 
+// Listener for mouse event status changes from main process (e.g., click-through mode toggled)
+ipcRenderer.on('mouse-events-status', (event, ignored) => {
+    console.log('Mouse events ignored status from main:', ignored);
+    // The UI might want to reflect this, e.g., by changing an icon or style.
+    // For now, just logging. The jefe-element itself doesn't show this status.
+});
+
+// Listener for a shortcut-triggered window close request from the main process.
+ipcRenderer.on('shortcut-close-window', () => {
+    const appElement = jefeElement();
+    if (appElement && typeof appElement.handleClose === 'function') {
+        appElement.handleClose(); // Call the web component's close handler
+    }
+});
+
+
+/**
+ * Starts the screen and audio capture process based on the operating system.
+ * - macOS: Uses SystemAudioDump (via IPC to main) for system audio and getDisplayMedia for screen.
+ * - Linux: Uses getDisplayMedia for screen and getUserMedia for microphone.
+ * - Windows: Uses getDisplayMedia with loopback audio for screen and system audio.
+ * It also starts an interval for capturing screenshots.
+ */
 async function startCapture() {
     try {
         if (isMacOS) {
@@ -161,7 +229,7 @@ async function startCapture() {
         setTimeout(captureScreenshot, 100);
     } catch (err) {
         console.error('Error starting capture:', err);
-        cheddar.e().setStatus('error');
+        jefe.e().setStatus('error'); // Renamed
     }
 }
 
@@ -172,67 +240,92 @@ function setupLinuxMicProcessing(micStream) {
     const micProcessor = micAudioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
     let audioBuffer = [];
-    const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
+    const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION; // Number of samples in one chunk
 
     micProcessor.onaudioprocess = async e => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(...inputData);
+        const inputData = e.inputBuffer.getChannelData(0); // Get mono audio data
+        // It seems a global audioBuffer was intended here, but it's shadowed.
+        // Using a local one for this function scope or ensure the global one is used if intended.
+        let localAudioBuffer = []; // Assuming local buffer for this processing logic.
+        localAudioBuffer.push(...inputData);
 
-        // Process audio in chunks
-        while (audioBuffer.length >= samplesPerChunk) {
-            const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
+        // Process audio in defined chunks
+        while (localAudioBuffer.length >= samplesPerChunk) {
+            const chunk = localAudioBuffer.splice(0, samplesPerChunk);
+            const pcmData16 = convertFloat32ToInt16(chunk); // Convert to 16-bit PCM
+            const base64Data = arrayBufferToBase64(pcmData16.buffer); // Encode as Base64
 
+            // Send audio data to the main process
             await ipcRenderer.invoke('send-audio-content', {
                 data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
+                mimeType: `audio/pcm;rate=${SAMPLE_RATE}`,
             });
         }
     };
 
-    micSource.connect(micProcessor);
-    micProcessor.connect(micAudioContext.destination);
+    micSource.connect(micProcessor); // Connect microphone source to processor
+    micProcessor.connect(micAudioContext.destination); // Connect processor to destination (e.g., speakers, though often not needed for capture)
 
-    // Store processor reference for cleanup
-    audioProcessor = micProcessor;
+    // Store processor reference for cleanup, potentially on a global or class variable if needed elsewhere
+    // For now, this assignment to a global `audioProcessor` might conflict if Windows also uses it.
+    // Consider renaming or scoping this if both Linux mic and Windows loopback are simultaneously possible (they aren't in current logic).
+    micAudioProcessor = micProcessor; // Use a distinct variable for Linux mic processor
 }
 
+/**
+ * Sets up audio processing for Windows loopback audio obtained via getDisplayMedia.
+ * It creates an AudioContext, connects the mediaStream to a ScriptProcessorNode,
+ * and processes audio data in chunks, sending it to the main process.
+ */
 function setupWindowsLoopbackProcessing() {
-    // Setup audio processing for Windows loopback audio only
+    if (!mediaStream || mediaStream.getAudioTracks().length === 0) {
+        console.warn("Windows loopback processing called without an audio track in mediaStream.");
+        return;
+    }
     audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     const source = audioContext.createMediaStreamSource(mediaStream);
-    audioProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    audioProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1); // 1 input channel, 1 output channel
 
-    let audioBuffer = [];
-    const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
+    let localAudioBuffer = []; // Local buffer for accumulating audio samples
+    const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION; // Number of samples in one chunk
 
     audioProcessor.onaudioprocess = async e => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(...inputData);
+        const inputData = e.inputBuffer.getChannelData(0); // Get mono audio data
+        localAudioBuffer.push(...inputData);
 
-        // Process audio in chunks
-        while (audioBuffer.length >= samplesPerChunk) {
-            const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
+        // Process audio in defined chunks
+        while (localAudioBuffer.length >= samplesPerChunk) {
+            const chunk = localAudioBuffer.splice(0, samplesPerChunk);
+            const pcmData16 = convertFloat32ToInt16(chunk); // Convert to 16-bit PCM
+            const base64Data = arrayBufferToBase64(pcmData16.buffer); // Encode as Base64
 
+            // Send audio data to the main process
             await ipcRenderer.invoke('send-audio-content', {
                 data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
+                mimeType: `audio/pcm;rate=${SAMPLE_RATE}`,
             });
         }
     };
 
-    source.connect(audioProcessor);
-    audioProcessor.connect(audioContext.destination);
+    source.connect(audioProcessor); // Connect media stream source to processor
+    audioProcessor.connect(audioContext.destination); // Connect processor to context destination (speakers, etc.)
+                                                    // This is often done even if output is not desired, to keep the graph active.
 }
 
-async function captureScreenshot() {
-    console.log('Capturing screenshot...');
-    if (!mediaStream) return;
 
-    // Lazy init of video element
+/**
+ * Captures a screenshot from the current mediaStream (screen capture).
+ * It uses a hidden video element and an offscreen canvas to draw and encode the image.
+ * The captured image (JPEG, base64 encoded) is sent to the main process.
+ */
+async function captureScreenshot() {
+    // console.log('Capturing screenshot...'); // Can be too verbose for interval logging
+    if (!mediaStream || mediaStream.getVideoTracks().length === 0) {
+        // console.warn("Screenshot capture skipped: No active video mediaStream.");
+        return;
+    }
+
+    // Lazy initialization of the hidden video element used to play the screen capture stream
     if (!hiddenVideo) {
         hiddenVideo = document.createElement('video');
         hiddenVideo.srcObject = mediaStream;
@@ -338,36 +431,44 @@ function stopCapture() {
         hiddenVideo = null;
     }
     offscreenCanvas = null;
-    offscreenContext = null;
+    offscreenContext = null; // Clear canvas context reference
 }
 
-// Send text message to Gemini
+/**
+ * Sends a text message from the UI to the main process to be relayed to the Gemini AI.
+ * @param {string} text - The text message to send.
+ * @returns {Promise<object>} A promise that resolves with the result of the IPC call.
+ */
 async function sendTextMessage(text) {
     if (!text || text.trim().length === 0) {
-        console.warn('Cannot send empty text message');
-        return { success: false, error: 'Empty message' };
+        console.warn('Cannot send empty text message.');
+        return { success: false, error: 'Empty message content.' };
     }
 
     try {
+        // Invoke 'send-text-message' IPC handler in the main process
         const result = await ipcRenderer.invoke('send-text-message', text);
         if (result.success) {
-            console.log('Text message sent successfully');
+            console.log('Text message sent successfully via IPC.');
         } else {
-            console.error('Failed to send text message:', result.error);
+            console.error('Failed to send text message via IPC:', result.error);
         }
         return result;
     } catch (error) {
-        console.error('Error sending text message:', error);
+        console.error('IPC error sending text message:', error);
         return { success: false, error: error.message };
     }
 }
 
-window.cheddar = {
-    initializeGemini,
-    startCapture,
-    stopCapture,
-    sendTextMessage,
-    isLinux: isLinux,
-    isMacOS: isMacOS,
-    e: cheddarElement,
+// --- Expose functions to the main world (accessible via window.jefe in jefe-element.js) ---
+// This object provides an API for the web component (jefe-element.js) to interact with
+// this renderer process script, which in turn communicates with the main process.
+window.jefe = {
+    initializeGemini,    // Function to initialize the AI session
+    startCapture,        // Function to start screen and audio capture
+    stopCapture,         // Function to stop all captures
+    sendTextMessage,     // Function to send a text message to the AI
+    isLinux: isLinux,    // Boolean flag indicating if the platform is Linux
+    isMacOS: isMacOS,    // Boolean flag indicating if the platform is macOS
+    e: jefeElement,      // Function to get the <jefe-app> DOM element
 };

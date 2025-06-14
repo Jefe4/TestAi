@@ -142,17 +142,20 @@ class JefeAgent(BaseAgent):
         # Add analysis to trace (optional, could also be part of the final response log)
         # self.context_manager.add_trace_event("jefe_task_analysis_complete", TaskAnalysis.to_dict(task_analysis_result)) # if TaskAnalysis has to_dict
 
-        raw_result: Dict[str, Any]
+        # raw_result: Dict[str, Any] # This will be changed by the handlers
         # 2. Determine handling strategy based on complexity
+        # The handler methods will now return a List[Dict[str, Any]] of raw tool results
+        raw_tool_results_list: List[Dict[str, Any]]
         if task_analysis_result.complexity == "simple":
-            raw_result = await self._handle_simple_assistance(jefe_context, task_analysis_result)
+            raw_tool_results_list = await self._handle_simple_assistance(jefe_context, task_analysis_result)
         elif task_analysis_result.complexity == "moderate":
-            raw_result = await self._handle_parallel_analysis(jefe_context, task_analysis_result)
+            raw_tool_results_list = await self._handle_parallel_analysis(jefe_context, task_analysis_result)
         else: # "complex"
-            raw_result = await self._handle_complex_research(jefe_context, task_analysis_result)
+            raw_tool_results_list = await self._handle_complex_research(jefe_context, task_analysis_result)
 
-        # 3. Format the raw result into a user-facing response
-        formatted_response = self._format_jefe_response(raw_result, jefe_context, task_analysis_result)
+        # 3. Format the list of raw tool results into a user-facing response
+        # The _format_jefe_response will be updated in a subsequent step to accept List[Dict[str, Any]]
+        formatted_response = self._format_jefe_response(raw_tool_results_list, jefe_context, task_analysis_result) # type: ignore
 
         # 4. Log the full interaction (context + final formatted response)
         self.context_manager.add_interaction(jefe_context, formatted_response)
@@ -160,243 +163,324 @@ class JefeAgent(BaseAgent):
         return formatted_response
 
     # --- Handler Methods (Single Agent, Parallel Tools Pattern) ---
-    async def _handle_simple_assistance(self, context: JefeContext, analysis: TaskAnalysis) -> Dict[str, Any]:
-        """Handles tasks deemed 'simple', often by selecting a primary tool."""
+    async def _handle_simple_assistance(self, context: JefeContext, analysis: TaskAnalysis) -> List[Dict[str, Any]]:
+        """
+        Handles tasks deemed 'simple', often by selecting a primary tool.
+        Returns a list containing a single raw tool result dictionary or an error dictionary.
+        """
         self.logger.info(f"Handling simple assistance for task type: {analysis.task_type.value}")
 
-        # Basic tool selection: use the first suggested tool or a default fallback.
-        # Future: Implement more sophisticated primary tool selection based on analysis.
-        primary_tool_name = analysis.suggested_tools[0] if analysis.suggested_tools else "code_analyzer_tool" # Example fallback
+        # Use tool keys (e.g., "code_analyzer") not "code_analyzer_tool"
+        primary_tool_name = analysis.suggested_tools[0] if analysis.suggested_tools else "code_analyzer"
 
         tool_to_execute = self.tools.get(primary_tool_name)
 
         if tool_to_execute:
             self.logger.info(f"Executing primary tool for simple assistance: '{primary_tool_name}'")
             try:
-                # Tools are expected to take context and potentially specific kwargs based on analysis
-                # For simple assistance, we might pass specific parts of the context or analysis.
-                # Example: tool_kwargs = {"error_message": analysis.immediate_issues[0]} if analysis.immediate_issues else {}
-                tool_kwargs = {} # Keep it simple for now
+                tool_kwargs = {}
                 result = await tool_to_execute.execute(context, **tool_kwargs)
-
-                # Adapt tool's raw result to the expected structure for _format_jefe_response
-                return {
-                    "primary_issue": result.get("data", {}).get("findings", "Issue identified by tool.") if isinstance(result.get("data"), dict) else result.get("data", "Issue identified by tool."),
-                    "recommended_action": result.get("data", {}).get("recommendation", "Action suggested by tool.") if isinstance(result.get("data"), dict) else "Action suggested by tool.",
-                    "additional_value": result.get("data", {}).get("enhancement", "Further improvements may be possible.") if isinstance(result.get("data"), dict) else "Further improvements may be possible.",
-                    "confidence": result.get("confidence", 0.75), # Tool should provide confidence
-                    "tools_used": [primary_tool_name],
-                    "details": result # Store full tool result for richer formatting or logging
-                }
+                # Ensure tool_used is in the result, tools should ideally do this themselves.
+                if 'tool_used' not in result: result['tool_used'] = primary_tool_name
+                return [result]
             except Exception as e:
                 self.logger.error(f"Error executing tool '{primary_tool_name}' for simple assistance: {e}", exc_info=True)
-                return {"primary_issue": f"Error with tool '{primary_tool_name}'.",
-                        "recommended_action": "Review tool execution logs and system status.",
-                        "additional_value": str(e),
-                        "confidence": 0.2,
-                        "tools_used": [primary_tool_name]}
+                return [{"status": "error", "tool_used": primary_tool_name, "error": f"Exception during tool execution: {str(e)}"}]
         else:
             self.logger.warning(f"Tool '{primary_tool_name}' not found for simple assistance. No action taken.")
-            return {"primary_issue": f"Tool '{primary_tool_name}' not available.",
-                    "recommended_action": "Verify tool configuration and availability.",
-                    "confidence": 0.3,
-                    "tools_used": []}
+            return [{"status": "error", "tool_used": primary_tool_name, "error": f"Tool '{primary_tool_name}' not available."}]
 
-    async def _handle_parallel_analysis(self, context: JefeContext, analysis: TaskAnalysis) -> Dict[str, Any]:
-        """Handles 'moderate' complexity tasks by running multiple relevant tools in parallel and synthesizing results."""
+    async def _handle_parallel_analysis(self, context: JefeContext, analysis: TaskAnalysis) -> List[Dict[str, Any]]:
+        """
+        Handles 'moderate' complexity tasks by running multiple relevant tools in parallel.
+        Returns a list of raw tool result dictionaries or error dictionaries.
+        """
         self.logger.info(f"Handling parallel analysis for task type: {analysis.task_type.value}")
 
-        # Select a few relevant tools based on analysis.suggested_tools
-        # Future: Implement more sophisticated selection of parallel tools.
-        selected_tool_names = analysis.suggested_tools[:3] if analysis.suggested_tools else ["code_analyzer_tool", "documentation_search_tool"] # Example fallback
+        selected_tool_names = analysis.suggested_tools[:3] if analysis.suggested_tools else ["code_analyzer", "documentation_search"] # Use tool keys
 
         tool_execution_tasks = []
         valid_tools_to_execute_names = []
         for tool_name in selected_tool_names:
             tool = self.tools.get(tool_name)
             if tool:
-                # Each tool's execute method is a coroutine
-                tool_execution_tasks.append(tool.execute(context)) # Assuming tools take JefeContext directly
+                tool_execution_tasks.append(tool.execute(context))
                 valid_tools_to_execute_names.append(tool_name)
             else:
                 self.logger.warning(f"Tool '{tool_name}' selected for parallel analysis not found.")
+                # Add an error placeholder if a suggested tool is missing
+                valid_tools_to_execute_names.append(tool_name) # Keep for indexing against results
+                tool_execution_tasks.append(asyncio.create_task(self._mock_missing_tool_error(tool_name)))
 
-        if not tool_execution_tasks:
-            self.logger.warning("No valid tools found or selected for parallel analysis.")
-            return {"primary_issue": "No tools available for parallel analysis.",
-                    "recommended_action": "Check tool configuration.",
-                    "confidence": 0.3, "tools_used": []}
+
+        if not tool_execution_tasks: # Should only happen if selected_tool_names was empty initially
+            self.logger.warning("No tools were selected or available for parallel analysis.")
+            return [{"status": "error", "tool_used": "parallel_analysis_handler", "error": "No tools selected for parallel analysis."}]
 
         self.logger.info(f"Executing parallel tools for analysis: {valid_tools_to_execute_names}")
-        # `return_exceptions=True` allows us to get results even if some tools fail
-        tool_results = await asyncio.gather(*tool_execution_tasks, return_exceptions=True)
+        tool_results_raw = await asyncio.gather(*tool_execution_tasks, return_exceptions=True)
 
-        # Synthesize results from parallel tool executions
-        synthesized_result = self._synthesize_parallel_results(tool_results, valid_tools_to_execute_names, context, analysis, prefix="Parallel Analysis")
-        return synthesized_result
+        processed_results: List[Dict[str, Any]] = []
+        for i, res_or_exc in enumerate(tool_results_raw):
+            tool_name = valid_tools_to_execute_names[i]
+            if isinstance(res_or_exc, Exception):
+                self.logger.error(f"Tool '{tool_name}' in parallel analysis raised an exception: {res_or_exc}", exc_info=res_or_exc)
+                processed_results.append({"status": "error", "tool_used": tool_name, "error": str(res_or_exc)})
+            elif isinstance(res_or_exc, dict):
+                if 'tool_used' not in res_or_exc: # Ensure tool_used is present
+                    res_or_exc['tool_used'] = tool_name
+                processed_results.append(res_or_exc)
+            else:
+                 self.logger.warning(f"Tool '{tool_name}' in parallel analysis returned unexpected type: {type(res_or_exc)}")
+                 processed_results.append({"status": "error", "tool_used": tool_name, "error": "Unexpected result type from tool."})
+        return processed_results
 
-    async def _handle_complex_research(self, context: JefeContext, analysis: TaskAnalysis) -> Dict[str, Any]:
-        """Handles 'complex' tasks, potentially involving multi-phase tool execution or deeper research."""
+    async def _handle_complex_research(self, context: JefeContext, analysis: TaskAnalysis) -> List[Dict[str, Any]]:
+        """
+        Handles 'complex' tasks, potentially involving multi-phase tool execution.
+        Returns a list of raw tool result dictionaries or error dictionaries.
+        """
         self.logger.info(f"Handling complex research for task type: {analysis.task_type.value}")
 
-        # Phase 1: Broad exploration with a set of tools
-        # Future: Tool selection could be more dynamic based on initial analysis.
-        exploration_tool_names = analysis.suggested_tools if analysis.suggested_tools else ["web_search_tool", "documentation_search_tool", "code_analyzer_tool"]
-        if not exploration_tool_names: # Ensure there's at least some default
-             exploration_tool_names = ["web_search_tool"]
-
+        exploration_tool_names = analysis.suggested_tools if analysis.suggested_tools else ["web_search", "documentation_search"] # Use tool keys
+        if not exploration_tool_names: exploration_tool_names = ["web_search"] # Default
 
         exploration_tasks = []
         valid_exploration_tools = []
         for tool_name in exploration_tool_names:
             tool = self.tools.get(tool_name)
             if tool:
-                exploration_tasks.append(tool.execute(context)) # Pass current context
+                exploration_tasks.append(tool.execute(context))
                 valid_exploration_tools.append(tool_name)
             else:
                 self.logger.warning(f"Exploration tool '{tool_name}' for complex research not found.")
+                valid_exploration_tools.append(tool_name) # Keep for indexing
+                exploration_tasks.append(asyncio.create_task(self._mock_missing_tool_error(tool_name)))
 
-        if not exploration_tasks:
-            return {"primary_issue": "No tools available for initial exploration in complex research.",
-                    "recommended_action": "Check tool configuration.", "confidence": 0.3, "tools_used": []}
+        if not exploration_tasks: # Should only happen if exploration_tool_names was empty
+            return [{"status": "error", "tool_used": "complex_research_handler", "error": "No tools selected for complex research."}]
 
         self.logger.info(f"Executing complex research (exploration phase) with tools: {valid_exploration_tools}")
-        exploration_results = await asyncio.gather(*exploration_tasks, return_exceptions=True)
+        exploration_results_raw = await asyncio.gather(*exploration_tasks, return_exceptions=True)
 
-        # Synthesize exploration results
-        # This synthesis could identify key findings or areas for a deeper dive.
-        exploration_synthesis = self._synthesize_parallel_results(exploration_results, valid_exploration_tools, context, analysis, prefix="Exploration Summary")
+        processed_exploration_results: List[Dict[str, Any]] = []
+        for i, res_or_exc in enumerate(exploration_results_raw):
+            tool_name = valid_exploration_tools[i]
+            if isinstance(res_or_exc, Exception):
+                self.logger.error(f"Tool '{tool_name}' in complex research raised an exception: {res_or_exc}", exc_info=res_or_exc)
+                processed_exploration_results.append({"status": "error", "tool_used": tool_name, "error": str(res_or_exc)})
+            elif isinstance(res_or_exc, dict):
+                if 'tool_used' not in res_or_exc: res_or_exc['tool_used'] = tool_name
+                processed_exploration_results.append(res_or_exc)
+            else:
+                 self.logger.warning(f"Tool '{tool_name}' in complex research returned unexpected type: {type(res_or_exc)}")
+                 processed_exploration_results.append({"status": "error", "tool_used": tool_name, "error": "Unexpected result type from tool."})
 
-        # Placeholder for Phase 2: Deeper dive or focused tool execution based on Phase 1.
-        # For now, complex research returns the synthesis of the exploration phase.
-        # Future: Could involve using an LLM to analyze exploration_synthesis and plan next steps,
-        # or select/configure more specialized tools.
+        # For now, complex research returns the list of raw results from the exploration phase.
+        # Future: Could involve further phases and more sophisticated synthesis logic.
+        return processed_exploration_results
 
-        return {"primary_issue": exploration_synthesis.get('primary_issue', "Complex research exploration complete."),
-                "recommended_action": exploration_synthesis.get('recommended_action', "Review exploration findings for further action."),
-                "additional_value": exploration_synthesis.get('additional_value', "Detailed results from exploration tools are available."),
-                "confidence": exploration_synthesis.get('confidence', 0.65),
-                "tools_used": valid_exploration_tools, # Tools used in the exploration phase
-                "details": {"exploration_results_summary": exploration_synthesis} # Attach the synthesis
-               }
+    async def _mock_missing_tool_error(self, tool_name: str) -> Dict[str, Any]:
+        """Helper to create a standard error dict for a missing tool for asyncio.gather."""
+        return {"status": "error", "tool_used": tool_name, "error": f"Tool '{tool_name}' not found/available."}
 
     # --- Helper Methods ---
-    def _format_jefe_response(self, raw_tool_result: Dict[str, Any], context: JefeContext, task_analysis: TaskAnalysis) -> Dict[str, Any]:
+    def _format_jefe_response(self, raw_tool_results: List[Dict[str, Any]], context: JefeContext, task_analysis: TaskAnalysis) -> Dict[str, Any]:
         """
-        Formats the raw result from handler methods into a standardized response structure.
-        This method aims to create a user-friendly and informative response.
+        Formats the synthesized result from tools into a standardized user-facing response structure.
         """
-        # Extract key pieces of information from the raw tool result
-        issue = raw_tool_result.get('primary_issue', 'Analysis complete. No specific issue highlighted.')
-        solution = raw_tool_result.get('recommended_action', 'Review the provided information and proceed as appropriate.')
-        enhancement = raw_tool_result.get('additional_value', '') # Optional additional info
+        # 1. Synthesize the raw tool results using the main synthesis method
+        synthesized_info = self._synthesize_tool_results(raw_tool_results, context, task_analysis.task_type)
 
-        # Construct a user-friendly text response.
-        # This can be made more sophisticated, perhaps using an LLM for summarization/formatting if needed.
+        # 2. Extract key pieces for the user-facing text message
+        issue = synthesized_info.get('primary_issue', 'Analysis complete. No specific issue highlighted.')
+        solution = synthesized_info.get('recommended_action', 'Review the provided information and proceed as appropriate.')
+        enhancement = synthesized_info.get('additional_value', '') # Optional
+
+        # 3. Construct the "🔧💡⚡" formatted text string
         formatted_response_parts = []
         if issue: formatted_response_parts.append(f"🔧 Finding: {issue}")
         if solution: formatted_response_parts.append(f"💡 Suggestion: {solution}")
         if enhancement: formatted_response_parts.append(f"⚡ Additionally: {enhancement}")
 
-        if not formatted_response_parts: # Fallback if no specific parts were generated
-            formatted_response_text = "Jefe has processed your context. No specific actions suggested at this time."
-            if raw_tool_result.get("tools_used"):
-                formatted_response_text += f" (Tools utilized: {', '.join(raw_tool_result['tools_used'])})."
+        if not formatted_response_parts:
+            if synthesized_info.get('confidence', 0) < 0.2: # Likely from _handle_all_tools_failed
+                 formatted_response_text = "Jefe encountered issues processing your request. " + issue # 'issue' will contain error summary
+            else:
+                formatted_response_text = "Jefe has processed your context. No specific actions suggested at this time."
+                if synthesized_info.get("tools_used"):
+                    formatted_response_text += f" (Tools utilized: {', '.join(synthesized_info['tools_used'])})."
         else:
             formatted_response_text = "\n".join(formatted_response_parts)
 
-        # Standard response structure
+        # 4. Construct the final response dictionary
+        final_response = {
+            'status': "success" if synthesized_info.get('confidence', 0) >= 0.2 else "error", # success unless all tools failed
+            'content': formatted_response_text,
+            'confidence': synthesized_info.get('confidence', 0.5),
+            'task_type': str(task_analysis.task_type.value), # From original analysis
+            'complexity': task_analysis.complexity,     # From original analysis
+            'priority': task_analysis.priority,         # From original analysis
+            'identified_issues_summary': synthesized_info.get('primary_issue'), # From synthesis
+            'recommended_actions_summary': synthesized_info.get('recommended_action'), # From synthesis
+            'enhancement_tips_summary': synthesized_info.get('additional_value'), # From synthesis
+            'tools_used': synthesized_info.get('tools_used', []),
+            'raw_tool_results': synthesized_info.get('details', {}).get('raw_tool_outputs', raw_tool_results) # Ensure 'details' exists
+            # 'context_updates': synthesized_info.get('context_updates', {}) # If we add context updates
+        }
+        return final_response
+
+    # --- New Synthesis Helper Methods ---
+    def _identify_primary_issue(self, results: List[Dict[str, Any]], context: JefeContext) -> str:
+        """Identifies the most pressing issue from successful tool results or context."""
+        # This method now expects `results` to be a list of SUCCESSFUL tool results.
+        for res in results:
+            # Look for specific keys that tools might use to highlight primary findings
+            primary_finding = res.get("primary_finding") or res.get("findings") or \
+                              (res.get("data", {}).get("findings") if isinstance(res.get("data"), dict) else None)
+            if primary_finding and isinstance(primary_finding, str) and len(primary_finding) > 10:
+                return f"Key finding from {res.get('tool_used', 'a tool')}: {(primary_finding.split('.')[0] or primary_finding.splitlines()[0])[:200]}"
+
+        if context.error_messages: # Check original context if no tool highlighted an issue
+            return f"User is facing an error: {context.error_messages[0][:150]}"
+
+        return "General context analysis performed; no single primary issue pinpointed by tools."
+
+    def _determine_best_action(self, results: List[Dict[str, Any]], context: JefeContext) -> str:
+        """Determines the most relevant next action or recommendation from successful tool results."""
+        # This method now expects `results` to be a list of SUCCESSFUL tool results.
+        for res in results:
+            recommendation = res.get("recommendation") or \
+                             (res.get("data", {}).get("recommendation") if isinstance(res.get("data"), dict) else None)
+            if recommendation and isinstance(recommendation, str) and len(recommendation) > 10:
+                return recommendation[:300]
+
+        return "Review the detailed outputs from the executed tools for specific suggestions."
+
+    def _extract_enhancement_tip(self, results: List[Dict[str, Any]], context: JefeContext) -> str:
+        """Extracts a relevant enhancement tip or additional advice from successful tool results."""
+        # This method now expects `results` to be a list of SUCCESSFUL tool results.
+        for res in results:
+            enhancement = res.get("additional_value") or \
+                          (res.get("data", {}).get("enhancement") if isinstance(res.get("data"), dict) else None) or \
+                          res.get("tip")
+            if enhancement and isinstance(enhancement, str) and len(enhancement) > 5:
+                return enhancement[:200]
+
+        if context.programming_language:
+            return f"Consider exploring advanced features or libraries for {context.programming_language} relevant to your task."
+        return "Reviewing documentation for used technologies can often reveal further optimization opportunities."
+
+    def _calculate_synthesis_confidence(self, all_tool_results: List[Dict[str, Any]]) -> float:
+        """
+        Calculates an overall confidence score based on ALL tool results (successes and failures).
+        The `successful_results` list is used by other helpers, but this one needs all to assess overall reliability.
+        """
+        if not all_tool_results: return 0.1 # No tools ran or no results
+
+        successful_confidences = [
+            res.get("confidence", 0.5) for res in all_tool_results
+            if isinstance(res, dict) and res.get("status") == "success" and isinstance(res.get("confidence"), (float, int))
+        ]
+
+        num_total_tools = len(all_tool_results)
+        num_successful_tools = len(successful_confidences)
+
+        if num_successful_tools == 0: # All tools failed or no successful tools reported confidence
+            return 0.1
+
+        # Average confidence of successful tools
+        avg_successful_confidence = sum(successful_confidences) / num_successful_tools
+
+        # Modulate by the ratio of successful tools
+        success_ratio = num_successful_tools / num_total_tools
+
+        # Weighted confidence: higher if more tools succeeded and their individual confidences were high.
+        # Example weighting: 70% from avg successful confidence, 30% from success ratio.
+        # Adjust weights as needed.
+        final_confidence = (avg_successful_confidence * 0.7) + (success_ratio * 0.3)
+
+        return round(final_confidence, 2)
+
+    def _handle_all_tools_failed(self, error_results: List[Dict[str, Any]], context: JefeContext) -> Dict[str, Any]:
+        """Formats a response when all tools fail or return errors."""
+        self.logger.warning(f"All tools failed or returned errors. Number of error results: {len(error_results)}")
+        error_summary_parts = []
+        tools_that_failed = set()
+        for res in error_results[:3]: # Limit to first 3 errors for brevity
+            tool_name = res.get('tool_used', 'UnknownTool')
+            tools_that_failed.add(tool_name)
+            err_msg = res.get('error', 'Undescribed failure')
+            error_summary_parts.append(f"{tool_name}: {str(err_msg)[:100]}")
+
+        error_summary_str = "; ".join(error_summary_parts)
+        if not error_summary_str and error_results:
+            error_summary_str = "Multiple tools encountered issues."
+        elif not error_results:
+            error_summary_str = "No tool results to process, though failure was indicated."
+
         return {
-            'status': "success", # Assuming success if we got this far, errors handled in tool execution
-            'content': formatted_response_text, # User-facing formatted response
-            'confidence': raw_tool_result.get('confidence', 0.8), # Overall confidence from the handling method
-            'task_type_analysis': str(task_analysis.task_type.value), # Analyzed task type
-            'complexity_analysis': task_analysis.complexity, # Analyzed complexity
-            'priority_analysis': task_analysis.priority, # Analyzed priority
-            'tools_used': raw_tool_result.get('tools_used', []), # List of tools that contributed
-            'raw_tool_outputs': raw_tool_result.get('details') # Optional: pass raw tool outputs for debugging or UI
+            "primary_issue": f"Unable to complete analysis due to tool failures. Errors: {error_summary_str}",
+            "recommended_action": "The system encountered issues with its internal tools. Please try rephrasing your request, or check tool configurations and external service status.",
+            "additional_value": "If the problem persists, reviewing system logs for detailed error messages from tools might be helpful.",
+            "confidence": 0.1,
+            "tools_used": list(tools_that_failed),
+            "details": {"raw_tool_outputs": error_results}
         }
 
-    def _synthesize_parallel_results(self, results: list, tool_names: List[str], context: JefeContext, analysis: TaskAnalysis, prefix: str = "") -> Dict[str, Any]:
+    def _extract_context_updates(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Placeholder for future logic to extract context updates from successful tool results."""
+        # This method now expects `results` to be a list of SUCCESSFUL tool results.
+        return {}
+
+    def _synthesize_tool_results(self, tool_results_raw: List[Dict[str, Any]], context: JefeContext, task_type: JefeTaskType) -> Dict[str, Any]:
         """
-        Basic synthesis of results from multiple tools run in parallel.
-        This is a placeholder and needs to be made much more sophisticated.
-        Ideally, an LLM would synthesize these results based on the initial query and context.
+        Synthesizes raw results from one or more tools into a coherent summary dictionary.
         """
-        self.logger.info(f"Synthesizing {len(results)} parallel results for {analysis.task_type.value}. Prefix: '{prefix}'")
+        self.logger.info(f"Synthesizing {len(tool_results_raw)} raw tool results for task type: {task_type.value if hasattr(task_type, 'value') else task_type}")
 
-        successful_outputs: List[str] = []
-        error_outputs: List[str] = []
-        all_tool_details = [] # Store individual tool results for potential inclusion
-        combined_confidence = 0.0
-        num_successful_tools = 0
+        # `tool_results_raw` is already a list of dicts (results or errors) from handlers.
+        processed_tool_results = tool_results_raw
 
-        for i, res in enumerate(results):
-            tool_name = tool_names[i] if i < len(tool_names) else "unknown_tool"
+        executed_tool_names = [res.get("tool_used", "unknown_tool") for res in processed_tool_results if isinstance(res, dict)]
 
-            if isinstance(res, Exception):
-                self.logger.error(f"Error from tool '{tool_name}' during parallel execution: {res}", exc_info=res)
-                error_outputs.append(f"Error - {tool_name}: {str(res)[:150]}") # Truncate error message
-                all_tool_details.append({"tool": tool_name, "status": "error", "output": str(res)})
-                continue
+        successful_results = [res for res in processed_tool_results if isinstance(res, dict) and res.get("status") == "success"]
 
-            if not isinstance(res, dict):
-                self.logger.warning(f"Unexpected result type from tool '{tool_name}': {type(res)}. Expected dict.")
-                error_outputs.append(f"Non-dict result from {tool_name}.")
-                all_tool_details.append({"tool": tool_name, "status": "unexpected_type", "output": str(res)[:200]})
-                continue
+        # If no tools ran at all (e.g. handler returned empty list for some reason)
+        if not processed_tool_results:
+             self.logger.warning("Synthesizing results, but no tool results were provided to _synthesize_tool_results.")
+             return {
+                "primary_issue": "No tool activity was initiated or reported.",
+                "recommended_action": "This may indicate an issue before tool selection or execution.",
+                "additional_value": "", "confidence": 0.05, "tools_used": [], "details": {"raw_tool_outputs": []}
+            }
 
-            all_tool_details.append({"tool": tool_name, "status": res.get("status", "unknown"), "output": res}) # Store full result
+        # If all tools that ran failed or returned errors
+        if not successful_results:
+            return self._handle_all_tools_failed(processed_tool_results, context)
 
-            if res.get("status") == "success":
-                num_successful_tools += 1
-                # Prefer 'content' if available, else 'data', else stringify 'data' if it's a dict.
-                content = res.get("content")
-                if content is None:
-                    data_payload = res.get("data")
-                    if isinstance(data_payload, dict):
-                        # Try to get a meaningful summary from data if it's a dict
-                        content = data_payload.get("summary", data_payload.get("findings", str(data_payload)[:150]))
-                    else:
-                        content = str(data_payload)[:150] if data_payload is not None else ""
+        # If we have at least one successful result, proceed with synthesis
+        primary_issue = self._identify_primary_issue(successful_results, context)
+        best_action = self._determine_best_action(successful_results, context)
+        enhancement_tip = self._extract_enhancement_tip(successful_results, context)
+        # Pass ALL processed results (successes and failures) to calculate overall confidence
+        confidence = self._calculate_synthesis_confidence(processed_tool_results)
 
-                successful_outputs.append(f"Tool '{tool_name}': {content}")
-                combined_confidence += res.get("confidence", 0.5) # Use 0.5 as neutral if no confidence
-            else:
-                error_outputs.append(f"Failed - {tool_name}: {res.get('error', res.get('message', 'Unknown error'))[:150]}")
+        # context_updates = self._extract_context_updates(successful_results) # For future use
 
-        # Naive synthesis logic
-        final_issue_parts = []
-        final_solution_parts = []
-        final_enhancement_parts = []
+        final_tools_used = list(set(name for name in executed_tool_names if name and name != "unknown_tool"))
+        if not final_tools_used and any(name == "unknown_tool" for name in executed_tool_names):
+             final_tools_used = ["unknown_tool (attempted)"]
 
-        if successful_outputs:
-            final_issue_parts.append(f"{prefix} Key Insights Gathered:")
-            for i, output_str in enumerate(successful_outputs):
-                 final_issue_parts.append(f"  - {output_str}")
-        if error_outputs:
-            final_issue_parts.append(f"{prefix} Issues Encountered During Analysis:")
-            for i, err_str in enumerate(error_outputs):
-                final_issue_parts.append(f"  - {err_str}")
-
-        if not final_issue_parts:
-            final_issue_parts.append(f"{prefix} Analysis performed, but no specific textual output to synthesize.")
-
-        # For now, recommended_action and additional_value are generic
-        final_solution_parts.append("Review the detailed findings from each tool (if available in 'details').")
-        if num_successful_tools < len(tool_names):
-             final_solution_parts.append("Some tools encountered errors; check logs for details.")
-
-
-        avg_confidence = (combined_confidence / num_successful_tools) if num_successful_tools > 0 else 0.3
 
         return {
-            "primary_issue": "\n".join(final_issue_parts),
-            "recommended_action": "\n".join(final_solution_parts),
-            "additional_value": "\n".join(final_enhancement_parts) if final_enhancement_parts else "Further investigation may be needed based on detailed outputs.",
-            "confidence": round(avg_confidence, 2),
-            "tools_used": tool_names, # All tools attempted
-            "details": all_tool_details # Store individual raw results
+            "primary_issue": primary_issue,
+            "recommended_action": best_action,
+            "additional_value": enhancement_tip,
+            "confidence": confidence,
+            "tools_used": final_tools_used,
+            # "context_updates": context_updates, # For future use
+            "details": {"raw_tool_outputs": processed_tool_results} # Store all processed results
         }
 
     def _load_tools(self) -> Dict[str, 'BaseTool']:

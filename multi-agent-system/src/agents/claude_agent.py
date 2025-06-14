@@ -1,18 +1,25 @@
 # src/agents/claude_agent.py
-"""Specialized agent for interacting with Anthropic's Claude AI models."""
+"""
+Specialized agent for interacting with Anthropic's Claude AI models.
 
-import asyncio # Added
-from typing import Dict, Any, Optional
+This agent handles communication with the Claude API via the APIManager,
+formats requests according to Claude's specifications (e.g., messages API),
+and processes the responses.
+"""
+
+import asyncio
+from typing import Dict, Any, Optional, List # Added List for type hinting
 
 try:
     from .base_agent import BaseAgent
     from ..utils.api_manager import APIManager
-    # Logger is typically available via self.logger from BaseAgent
+    # Logger is typically available via self.logger from BaseAgent, inherited from BaseAgent.
 except ImportError:
-    # Fallback for direct script execution or import issues
+    # Fallback for direct script execution or import issues (e.g., in testing scenarios)
     import sys
     import os
-    import asyncio # Added for fallback scenario as well
+    # Ensure asyncio is available in fallback for the __main__ block test.
+    import asyncio # Redundant if already imported, but safe.
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -21,8 +28,9 @@ except ImportError:
 
 class ClaudeAgent(BaseAgent):
     """
-    An agent that utilizes Anthropic's Claude models for tasks like
-    text generation, summarization, Q&A, and general analysis.
+    An agent that utilizes Anthropic's Claude models for tasks such as
+    text generation, summarization, question answering, and general analysis.
+    It interacts with the Claude API using the messages format.
     """
 
     def __init__(self, agent_name: str, api_manager: APIManager, config: Optional[Dict[str, Any]] = None):
@@ -30,119 +38,150 @@ class ClaudeAgent(BaseAgent):
         Initializes the ClaudeAgent.
 
         Args:
-            agent_name: The name of the agent.
-            api_manager: An instance of APIManager to handle API calls.
+            agent_name: The user-defined name for this agent instance.
+            api_manager: An instance of `APIManager` to handle authenticated API calls to Claude.
             config: Optional configuration dictionary for the agent.
-                    Expected keys: "model", "max_tokens", "temperature", "default_system_prompt".
+                    Expected keys might include:
+                    - "model" (str): The specific Claude model to use (e.g., "claude-3-5-sonnet-20240620").
+                    - "max_tokens" (int): Default maximum tokens for the response (Claude uses "max_tokens_to_sample").
+                    - "max_tokens_to_sample" (int): Claude-specific max tokens parameter.
+                    - "temperature" (float): Default sampling temperature.
+                    - "default_system_prompt" (str): A default system prompt to use if none is provided in the query.
         """
-        super().__init__(agent_name, config)
-        self.api_manager = api_manager
+        super().__init__(agent_name, config) # Initialize BaseAgent
+        self.api_manager = api_manager # Store APIManager for making API calls
         
-        # Default model if not specified in config
-        self.model = self.config.get("model", "claude-3-5-sonnet-20240620") 
-        self.logger.info(f"ClaudeAgent '{self.agent_name}' initialized with model '{self.model}'.")
+        # Set the Claude model to use, defaulting if not specified in config.
+        self.model: str = self.config.get("model", "claude-3-5-sonnet-20240620")
+        self.logger.info(f"ClaudeAgent '{self.agent_name}' initialized, configured for model '{self.model}'.")
 
     def get_capabilities(self) -> Dict[str, Any]:
         """
         Describes the capabilities of the ClaudeAgent.
+
+        Returns:
+            A dictionary outlining the agent's description, primary capabilities (tasks it can perform),
+            and a list of Claude models it's known to support or is configured for.
         """
         return {
-            "description": "Agent for general analysis, content creation, and conversational AI using Claude.",
-            "capabilities": ["text_generation", "summarization", "q&a", "general_analysis", "document_processing"],
-            "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"] 
+            "description": "Agent for general analysis, content creation, and conversational AI using Anthropic's Claude models.",
+            "capabilities": ["text_generation", "summarization", "q&a", "general_analysis", "document_processing", "chat"],
+            "models_supported": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307", "claude-2.1", "claude-instant-1.2"]
         }
 
-    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]: # Changed to async def
+    async def process_query(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Processes a query using the Claude API.
+        Processes a given query by making a request to the Claude API.
+
+        The method constructs a payload suitable for Claude's messages API,
+        including the user's prompt and any specified system prompt. It then
+        uses the `APIManager` to make the asynchronous API call and parses
+        the response to extract the generated text content.
 
         Args:
-            query_data: A dictionary containing the query details.
+            query_data: A dictionary containing the details for the query.
                         Expected keys:
-                        - "prompt" (str): The user's actual query.
-                        - "system_prompt" (Optional[str]): Custom system prompt for this query.
-                                                           Overrides default if provided.
-                        - Other potential keys for future use: "conversation_history", "temperature_override", etc.
+                        - "prompt" (str): The user's actual query or message content. This is mandatory.
+                        - "system_prompt" (Optional[str]): A system message to guide the AI's behavior.
+                                                           If not provided, a default system prompt from the
+                                                           agent's configuration or a generic one is used.
+                        - "max_tokens_to_sample" (Optional[int]): Overrides the default max tokens for the response.
+                        - "temperature" (Optional[float]): Overrides the default sampling temperature.
+
         Returns:
-            A dictionary containing the status of the operation and the response content or error message.
+            A dictionary containing:
+            - "status" (str): "success" or "error".
+            - "content" (str, optional): The text content of Claude's response, if successful.
+            - "message" (str, optional): An error message, if an error occurred.
+            - "details" (Any, optional): Additional details from the API response or error.
+            - "finish_reason" (str, optional): The reason the model stopped generating text (e.g., "end_turn", "max_tokens").
+            - "usage" (Dict, optional): Token usage information (e.g., {"input_tokens": ..., "output_tokens": ...}).
         """
         user_prompt = query_data.get("prompt")
-        if not user_prompt:
-            self.logger.error("User prompt is missing in query_data.")
+        if not user_prompt: # Validate that a prompt is provided
+            self.logger.error("User prompt is missing in query_data for ClaudeAgent.")
             return {"status": "error", "message": "User prompt missing"}
 
+        # Determine the system prompt to use.
+        # Priority: query_data override > agent config default > generic default.
         system_prompt_override = query_data.get("system_prompt")
-        # Use agent's default system prompt if no override is provided in query_data
-        # If system_prompt_override is an empty string, it will be passed as such to Claude.
-        # Claude API handles empty system prompts by not using one, which is fine.
-        if system_prompt_override is None: # only if not present in query_data
+        if system_prompt_override is None: # Only use default if 'system_prompt' key is not in query_data at all
             system_prompt_to_use = self.config.get("default_system_prompt", "You are a helpful AI assistant.")
-        else:
+        else: # If 'system_prompt' is present (even if an empty string), use it.
+              # Claude API handles empty system prompts by not using one.
             system_prompt_to_use = system_prompt_override
 
+        self.logger.info(f"Processing query for ClaudeAgent '{self.agent_name}' with model '{self.model}'. Prompt (first 100 chars): '{user_prompt[:100]}...'")
 
-        self.logger.info(f"Processing query for ClaudeAgent '{self.agent_name}' with prompt: '{user_prompt[:100]}...'")
-
-        messages = [{"role": "user", "content": user_prompt}]
+        # Construct the messages list for the Claude API (currently only the user prompt)
+        messages: List[Dict[str, str]] = [{"role": "user", "content": user_prompt}]
         
+        # Prepare the payload for the Claude API request
+        # Uses max_tokens_to_sample (Claude specific) or falls back to max_tokens from config.
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": query_data.get("max_tokens_to_sample", # Claude uses max_tokens_to_sample
-                                         self.config.get("max_tokens", # Fallback to generic max_tokens
-                                                         self.config.get("max_tokens_to_sample", 2000))), # Then specific
+            "max_tokens": query_data.get("max_tokens_to_sample") or \
+                          self.config.get("max_tokens_to_sample") or \
+                          self.config.get("max_tokens", 2000), # Default if no other max_tokens found
             "temperature": query_data.get("temperature", self.config.get("temperature", 0.5)),
-            # Other Claude-specific parameters like "stream", "top_k", "top_p" can be added here
+            # Other Claude-specific parameters like "stream", "top_k", "top_p" can be added here from query_data or config
         }
 
-        if system_prompt_to_use: # Only add system prompt to payload if it's not empty or None
+        # Add system prompt to payload only if it's non-empty.
+        if system_prompt_to_use:
             payload["system"] = system_prompt_to_use
         
-        self.logger.debug(f"Claude API payload: {payload}")
+        self.logger.debug(f"Claude API request payload: {payload}")
 
-        # Make the API call via APIManager
-        # Endpoint for Claude messages API is typically /v1/messages
-        response_data = await self.api_manager.make_request( # Changed to await
-            service_name='claude',
-            endpoint='messages', # APIManager will prepend base_url (e.g., https://api.anthropic.com/v1)
+        # Make the API call via APIManager.
+        # The endpoint for Claude messages API is typically "/v1/messages".
+        response_data = await self.api_manager.make_request(
+            service_name='claude', # Service name must match a configuration in APIManager
+            endpoint='messages',   # Standard endpoint for Claude's messages API
             method="POST",
-            data=payload
+            data=payload           # The constructed payload
         )
 
+        # Handle potential errors from the APIManager (e.g., network issues, HTTP errors)
         if response_data.get("error"):
-            self.logger.error(f"API request failed for Claude: {response_data.get('message', response_data.get('error'))}")
-            return {
+            self.logger.error(f"API request to Claude failed: {response_data.get('message', response_data.get('error'))}")
+            return { # Propagate a structured error
                 "status": "error",
                 "message": f"API request failed: {response_data.get('message', response_data.get('error'))}",
-                "details": response_data.get("content", response_data)
+                "details": response_data.get("content", response_data) # Include error content if available
             }
 
+        # Try to parse the successful response from Claude
         try:
-            # Claude's response structure for messages API:
-            # { "content": [ { "type": "text", "text": "response text" } ], "role": "assistant", ... }
-            if not response_data.get("content") or not isinstance(response_data["content"], list) or not response_data["content"]:
-                self.logger.error(f"Unexpected response structure from Claude (no content list). Response: {response_data}")
-                return {"status": "error", "message": "Invalid response structure from Claude API (no content)."}
+            # Expected Claude messages API response structure:
+            # { "id": ..., "type": "message", "role": "assistant",
+            #   "content": [ { "type": "text", "text": "Actual response text here..." } ], ... }
+            content_list = response_data.get("content")
+            if not content_list or not isinstance(content_list, list) or not content_list:
+                self.logger.error(f"Unexpected response structure from Claude (no content list or empty). Response: {str(response_data)[:500]}")
+                return {"status": "error", "message": "Invalid response structure from Claude API (missing or empty 'content' list)."}
 
             extracted_text = ""
-            # Iterate through content blocks, though for simple text prompts, usually one text block.
-            for block in response_data["content"]:
-                if block.get("type") == "text":
-                    extracted_text += block.get("text", "")
+            # Iterate through content blocks; typically one text block for simple text prompts.
+            for block in content_list:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    extracted_text += block.get("text", "") # Append text from each block
             
-            if not extracted_text: # If loop finishes and text is still empty
-                self.logger.error(f"No text found in Claude response content blocks. Response: {response_data}")
-                return {"status": "error", "message": "No text content found in Claude response."}
+            if not extracted_text: # If, after iterating, no text was extracted
+                self.logger.error(f"No text found in Claude response content blocks. Response: {str(response_data)[:500]}")
+                return {"status": "error", "message": "No text content found in Claude's response."}
 
             self.logger.info(f"Successfully received and parsed response from Claude for prompt: '{user_prompt[:100]}...'")
+            # Return a structured success response
             return {
                 "status": "success",
                 "content": extracted_text,
-                "finish_reason": response_data.get("stop_reason"),
-                "usage": response_data.get("usage") # { "input_tokens": ..., "output_tokens": ... }
+                "finish_reason": response_data.get("stop_reason"), # e.g., "end_turn", "max_tokens"
+                "usage": response_data.get("usage") # e.g., {"input_tokens": ..., "output_tokens": ...}
             }
-        except (IndexError, KeyError, TypeError) as e:
-            self.logger.error(f"Error parsing Claude response: {e}. Response data: {response_data}")
+        except (IndexError, KeyError, TypeError) as e: # Catch errors during response parsing
+            self.logger.error(f"Error parsing Claude response: {e}. Response data (first 500 chars): {str(response_data)[:500]}", exc_info=True)
             return {"status": "error", "message": f"Error parsing Claude response: {e}"}
 
 if __name__ == '__main__':

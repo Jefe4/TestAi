@@ -11,9 +11,9 @@ module.exports = {
         {
             name: '@electron-forge/maker-squirrel',
             config: {
-                name: 'cheating-daddy',
-                productName: 'Cheating Daddy',
-                shortcutName: 'Cheating Daddy',
+                name: 'jefe',
+                productName: 'Jefe',
+                shortcutName: 'Jefe',
                 createDesktopShortcut: true,
                 createStartMenuShortcut: true,
             },

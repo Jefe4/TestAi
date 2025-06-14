@@ -1,7 +1,17 @@
 import { html, css, LitElement } from './lit-core-2.7.4.min.js';
 
-class CheatingDaddyApp extends LitElement {
+/**
+ * @customElement jefe-app
+ * @summary Main application web component for Jefe.
+ *
+ * This component manages the UI, state, and interactions for the Jefe application.
+ * It handles different views (main, customize, help, assistant), user inputs,
+ * communication with the main Electron process (via `window.jefe` exposed by renderer.js),
+ * and displays AI responses.
+ */
+class JefeApp extends LitElement {
     static styles = css`
+        /* Component styles are defined here */
         * {
             box-sizing: border-box;
             font-family:
@@ -358,40 +368,75 @@ class CheatingDaddyApp extends LitElement {
         }
     `;
 
+    // Defines the properties of the component that will trigger re-renders when changed.
     static properties = {
+        /** The currently active view (e.g., 'main', 'customize', 'help', 'assistant'). */
         currentView: { type: String },
+        /** Text to display in the status bar, typically reflecting AI or system status. */
         statusText: { type: String },
+        /** Timestamp (ms) when the assistant session started, for calculating elapsed time. */
         startTime: { type: Number },
-        isRecording: { type: Boolean },
-        sessionActive: { type: Boolean },
+        /** Boolean indicating if audio/screen recording is active. */
+        isRecording: { type: Boolean }, // Note: This property is declared but not explicitly used in the provided code.
+                                        // `startTime` is used to infer session activity for display.
+        /** Boolean indicating if an AI session is currently active. */
+        sessionActive: { type: Boolean }, // Note: Also seems implicitly managed by view/startTime rather than direct set.
+        /** The value of the selected AI profile (e.g., 'interview', 'jefe'). */
         selectedProfile: { type: String },
+        /** The selected language for speech recognition and AI responses (e.g., 'en-US'). */
         selectedLanguage: { type: String },
+        /** Array storing the AI's responses during a session. */
         responses: { type: Array },
+        /** Index of the currently viewed response in the `responses` array. */
         currentResponseIndex: { type: Number },
     };
 
     constructor() {
         super();
-        this.currentView = 'main';
-        this.statusText = '';
-        this.startTime = null;
-        this.isRecording = false;
-        this.sessionActive = false;
+        // Initialize component state
+        this.currentView = 'main'; // Default view on load
+        this.statusText = ''; // Initial status text
+        this.startTime = null; // Time when assistant session begins
+        this.isRecording = false; // Reflects recording state (though not directly driving logic in this snippet)
+        this.sessionActive = false; // Reflects if an AI session is active (though not directly driving logic)
+
+        // Load saved preferences from localStorage or use defaults
         this.selectedProfile = localStorage.getItem('selectedProfile') || 'interview';
         this.selectedLanguage = localStorage.getItem('selectedLanguage') || 'en-US';
-        this.responses = [];
-        this.currentResponseIndex = -1;
+
+        this.responses = []; // Array to hold AI responses
+        this.currentResponseIndex = -1; // Index for navigating responses, -1 means no responses yet or not viewing one
+
+        // Note: Event listeners for IPC messages ('update-response', 'update-status')
+        // are set up in renderer.js and directly call methods like this.setStatus, this.setResponse.
+        // Consider moving those listeners into connectedCallback if more complex lifecycle management is needed.
     }
 
+    /**
+     * Handles the custom close button action by invoking an IPC call to the main process.
+     * This is typically used by the 'x' button in the custom header.
+     */
     async handleWindowClose() {
         const { ipcRenderer } = window.require('electron');
-        await ipcRenderer.invoke('window-close');
+        await ipcRenderer.invoke('window-close'); // Asks main process to close the window
     }
 
+    /**
+     * LitElement lifecycle method called when the element is connected to the DOM.
+     * Used for setup tasks.
+     */
     connectedCallback() {
         super.connectedCallback();
+        // Event listeners for IPC are handled in renderer.js currently.
+        // If this component needed to directly listen to IPC without the global `jefe.e()` proxy,
+        // listeners could be added here. Example:
+        // window.electronIPC.on('update-status', this.handleStatusUpdate.bind(this));
     }
 
+    /**
+     * Updates the status text displayed in the UI.
+     * @param {string} t - The new status text.
+     */
     setStatus(t) {
         this.statusText = t;
     }
@@ -409,142 +454,238 @@ class CheatingDaddyApp extends LitElement {
 
     disconnectedCallback() {
         super.disconnectedCallback();
+        // It's good practice to remove listeners here if they were added in connectedCallback.
+        // However, the current IPC listeners ('update-response', 'update-status') are global
+        // and managed in renderer.js, not directly on this component instance.
+        // If they were instance-specific, they'd be removed here:
+        // window.electronIPC.removeListener('update-status', this.handleStatusUpdate.bind(this));
 
-        const { ipcRenderer } = window.require('electron');
-        ipcRenderer.removeAllListeners('update-response');
-        ipcRenderer.removeAllListeners('update-status');
+        // The provided code has ipcRenderer.removeAllListeners in the web component,
+        // which might be unexpected if renderer.js also sets them up.
+        // This could lead to conflicts if not carefully managed.
+        // Assuming these are for global listeners that the component *itself* might have set up
+        // if it were directly using ipcRenderer (which it isn't for receiving, only for sending via handleWindowClose).
+        // For clarity, if these listeners are meant for `jefe.e().setStatus` etc., they are managed by `ipcRenderer.on` in `renderer.js`.
+        // This component's methods are called by those global handlers.
+        // const { ipcRenderer } = window.require('electron');
+        // ipcRenderer.removeAllListeners('update-response'); // These might be redundant or misplaced
+        // ipcRenderer.removeAllListeners('update-status');   // if listeners are in renderer.js
     }
 
+    /**
+     * Generic handler for input changes that save the value to localStorage.
+     * @param {Event} e - The input event from an input element.
+     * @param {string} property - The localStorage key to save the value under.
+     */
     handleInput(e, property) {
         localStorage.setItem(property, e.target.value);
     }
 
+    /**
+     * Handles changes to the profile selection dropdown.
+     * Updates the `selectedProfile` property and saves it to localStorage.
+     * @param {Event} e - The change event from the select element.
+     */
     handleProfileSelect(e) {
         this.selectedProfile = e.target.value;
         localStorage.setItem('selectedProfile', this.selectedProfile);
     }
 
+    /**
+     * Handles changes to the language selection dropdown.
+     * Updates the `selectedLanguage` property and saves it to localStorage.
+     * @param {Event} e - The change event from the select element.
+     */
     handleLanguageSelect(e) {
         this.selectedLanguage = e.target.value;
         localStorage.setItem('selectedLanguage', this.selectedLanguage);
     }
 
+    /**
+     * Handles the "Start Session" button click.
+     * Initializes the Gemini AI session via `window.jefe.initializeGemini`,
+     * starts media capture via `window.jefe.startCapture`,
+     * resets responses, and switches to the 'assistant' view.
+     */
     async handleStart() {
-        await cheddar.initializeGemini(this.selectedProfile, this.selectedLanguage);
-        cheddar.startCapture();
-        this.responses = [];
-        this.currentResponseIndex = -1;
-        this.currentView = 'assistant';
+        // Calls functions exposed by renderer.js on the window.jefe object
+        await window.jefe.initializeGemini(this.selectedProfile, this.selectedLanguage);
+        window.jefe.startCapture();
+        this.responses = []; // Clear previous responses
+        this.currentResponseIndex = -1; // Reset response navigation
+        this.startTime = Date.now(); // Set session start time for elapsed time display
+        this.currentView = 'assistant'; // Switch to the assistant view
     }
 
+    /**
+     * Handles close/back actions based on the current view.
+     * - If in 'customize' or 'help' view, navigates back to 'main' view.
+     * - If in 'assistant' view, stops media capture, closes the AI session (via IPC),
+     *   and navigates back to 'main' view.
+     * - If in 'main' view (or any other unexpected view), invokes IPC to quit the application.
+     */
     async handleClose() {
         if (this.currentView === 'customize' || this.currentView === 'help') {
             this.currentView = 'main';
         } else if (this.currentView === 'assistant') {
-            cheddar.stopCapture();
+            window.jefe.stopCapture(); // Stop media capture
+            this.startTime = null; // Reset start time
 
-            // Close the session
+            // Close the AI session via IPC call to the main process
             const { ipcRenderer } = window.require('electron');
-            await ipcRenderer.invoke('close-session');
-            this.sessionActive = false;
+            try {
+                await ipcRenderer.invoke('close-session');
+                this.sessionActive = false; // Update session status (though not directly used elsewhere yet)
+                console.log('AI session closed via IPC.');
+            } catch (error) {
+                console.error("Error invoking 'close-session':", error);
+            }
             this.currentView = 'main';
-            console.log('Session closed');
         } else {
-            // Quit the entire application
+            // If in main view or an unknown state, quit the application
             const { ipcRenderer } = window.require('electron');
             await ipcRenderer.invoke('quit-application');
         }
     }
 
+    /**
+     * Switches the view to 'help'.
+     */
     async openHelp() {
         this.currentView = 'help';
     }
 
+    /**
+     * Opens a help link for obtaining an API key in the default external browser.
+     * Uses IPC to request the main process to open the URL.
+     */
     async openAPIKeyHelp() {
         const { ipcRenderer } = window.require('electron');
-        await ipcRenderer.invoke('open-external', 'https://cheatingdaddy.com/help/api-key'); // TODO
+        // TODO: Update this URL if a specific help page is created for Jefe
+        await ipcRenderer.invoke('open-external', 'https://jefe.com/help/api-key');
     }
 
+    /**
+     * Opens an arbitrary external URL in the default browser.
+     * Uses IPC to request the main process to open the URL.
+     * @param {string} url - The URL to open.
+     */
     async openExternalLink(url) {
         const { ipcRenderer } = window.require('electron');
         await ipcRenderer.invoke('open-external', url);
     }
 
+    /**
+     * Scrolls the response container to the bottom.
+     * This is typically called after new content is added or view changes.
+     * Uses a `setTimeout` to ensure the DOM has updated before scrolling.
+     */
     scrollToBottom() {
         setTimeout(() => {
             const container = this.shadowRoot.querySelector('.response-container');
             if (container) {
                 container.scrollTop = container.scrollHeight;
             }
-        }, 0);
+        }, 0); // Timeout helps ensure DOM update before scroll calculation
     }
 
+    /**
+     * LitElement lifecycle method called after the element's DOM has been updated.
+     * Used here to scroll to bottom if the view changes and to notify the main
+     * process about view changes.
+     * @param {Map} changedProperties - A Map of properties that changed.
+     */
     updated(changedProperties) {
         super.updated(changedProperties);
         if (changedProperties.has('currentView')) {
             this.scrollToBottom();
         }
 
-        // Notify main process of view change
+        // Notify main process of view change. This helps the main process
+        // potentially adjust behavior (e.g., mouse event handling, though currently disabled there).
         if (changedProperties.has('currentView')) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.send('view-changed', this.currentView);
         }
     }
 
+    /**
+     * Handles sending a text message typed by the user to the AI.
+     * It retrieves the text from the input field, clears the field,
+     * and uses the `window.jefe.sendTextMessage` (exposed by renderer.js)
+     * to send the message via IPC to the main process.
+     */
     async handleSendText() {
         const textInput = this.shadowRoot.querySelector('#textInput');
         if (textInput && textInput.value.trim()) {
             const message = textInput.value.trim();
-            textInput.value = ''; // Clear input
+            textInput.value = ''; // Clear the input field
 
-            // Send the message
-            const result = await cheddar.sendTextMessage(message);
+            // Send the message using the exposed jefe API from renderer.js
+            const result = await window.jefe.sendTextMessage(message);
 
             if (!result.success) {
-                // Show error - could add to response area or status
+                // Display error if sending failed
                 console.error('Failed to send message:', result.error);
                 this.setStatus('Error sending message: ' + result.error);
             } else {
-                this.setStatus('Message sent...');
+                this.setStatus('Message sent...'); // Update status on successful send
             }
         }
     }
 
+    /**
+     * Handles the 'keydown' event on the text input field.
+     * If the Enter key is pressed without Shift, it prevents default newline behavior
+     * and calls `handleSendText` to send the message.
+     * @param {KeyboardEvent} e - The keyboard event.
+     */
     handleTextKeydown(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            this.handleSendText();
+            e.preventDefault(); // Prevent default action (e.g., adding a newline)
+            this.handleSendText(); // Send the message
         }
     }
 
+    /**
+     * Renders the header section of the application.
+     * The title and available actions change based on the `currentView`.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the header.
+     */
     renderHeader() {
         const titles = {
-            main: 'Cheating Daddy',
-            customize: 'Customize',
-            help: 'Help & Shortcuts',
-            assistant: 'Cheating Daddy',
+            main: 'Jefe',             // Title for the main/welcome view
+            customize: 'Customize',   // Title for the settings/customization view
+            help: 'Help & Shortcuts', // Title for the help view
+            assistant: 'Jefe',        // Title when the assistant session is active
         };
 
         let elapsedTime = '';
+        // Calculate and display elapsed time if in assistant view and session has started
         if (this.currentView === 'assistant' && this.startTime) {
-            const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
-            elapsedTime = `${elapsed}s`;
+            const elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+            // Simple HH:MM:SS formattter (can be more sophisticated if needed)
+            const h = Math.floor(elapsedSeconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((elapsedSeconds % 3600) / 60).toString().padStart(2, '0');
+            const s = (elapsedSeconds % 60).toString().padStart(2, '0');
+            if (elapsedSeconds >= 3600) elapsedTime = `${h}:${m}:${s}`;
+            else elapsedTime = `${m}:${s}`;
         }
 
         return html`
             <div class="header">
                 <div class="header-title">${titles[this.currentView]}</div>
                 <div class="header-actions">
-                    ${this.currentView === 'assistant'
+                    ${this.currentView === 'assistant' // Display elapsed time and status only in assistant view
                         ? html`
                               <span>${elapsedTime}</span>
                               <span>${this.statusText}</span>
                           `
                         : ''}
-                    ${this.currentView === 'main'
+                    ${this.currentView === 'main' // Display customize and help buttons only in main view
                         ? html`
-                              <button class="icon-button" @click=${() => (this.currentView = 'customize')}>
+                              <button class="icon-button" title="Customize" @click=${() => (this.currentView = 'customize')}>
+                                  <!-- Settings/Customize Icon SVG -->
                                   <?xml version="1.0" encoding="UTF-8"?><svg
                                       width="24px"
                                       height="24px"
@@ -570,7 +711,8 @@ class CheatingDaddyApp extends LitElement {
                                       ></path>
                                   </svg>
                               </button>
-                              <button class="icon-button" @click=${this.openHelp}>
+                              <button class="icon-button" title="Help" @click=${this.openHelp}>
+                                  <!-- Help/Question Icon SVG -->
                                   <?xml version="1.0" encoding="UTF-8"?><svg
                                       width="24px"
                                       height="24px"
@@ -605,16 +747,18 @@ class CheatingDaddyApp extends LitElement {
                               </button>
                           `
                         : ''}
-                    ${this.currentView === 'assistant'
+                    ${this.currentView === 'assistant' // Display "Back" button in assistant view
                         ? html`
-                              <button @click=${this.handleClose} class="button window-close">
-                                  Back&nbsp;&nbsp;<span class="key" style="pointer-events: none;">${cheddar.isMacOS ? 'Cmd' : 'Ctrl'}</span>&nbsp;&nbsp;<span class="key"
+                              <button @click=${this.handleClose} class="button window-close" title="End Session (Cmd/Ctrl + \\)">
+                                  Back&nbsp;&nbsp;<span class="key" style="pointer-events: none;">${jefe.isMacOS ? 'Cmd' : 'Ctrl'}</span>&nbsp;&nbsp;<span class="key"
                                       >&bsol;</span
                                   >
                               </button>
                           `
                         : html`
-                              <button @click=${this.handleClose} class="icon-button window-close">
+                              <!-- Display "Close" (X) icon button in other views (main, customize, help) -->
+                              <button @click=${this.handleClose} class="icon-button window-close" title="Close Window or Go Back (Cmd/Ctrl + \\)">
+                                  <!-- Close/X Icon SVG -->
                                   <?xml version="1.0" encoding="UTF-8"?><svg
                                       width="24px"
                                       height="24px"
@@ -639,6 +783,11 @@ class CheatingDaddyApp extends LitElement {
         `;
     }
 
+    /**
+     * Renders the main view of the application.
+     * This view typically includes an API key input and a "Start Session" button.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the main view.
+     */
     renderMainView() {
         return html`
             <div style="height: 100%; display: flex; flex-direction: column; width: 100%; max-width: 500px;">
@@ -661,8 +810,13 @@ class CheatingDaddyApp extends LitElement {
         `;
     }
 
+    /**
+     * Renders the customization view.
+     * This view allows users to select AI profiles, language, and set custom AI behavior prompts.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the customize view.
+     */
     renderCustomizeView() {
-        const profiles = [
+        const profiles = [ // Available AI profiles
             {
                 value: 'interview',
                 name: 'Job Interview',
@@ -781,13 +935,19 @@ class CheatingDaddyApp extends LitElement {
         `;
     }
 
+    /**
+     * Renders the help view.
+     * This view displays information about community links, keyboard shortcuts, how to use,
+     * supported profiles, and audio input methods.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the help view.
+     */
     renderHelpView() {
         return html`
             <div>
                 <div class="option-group">
                     <span class="option-label">Community & Support</span>
                     <div class="description">
-                        <span @click=${() => this.openExternalLink('https://github.com/sohzm/cheating-daddy')} class="link">📂 GitHub Repository</span
+                        <span @click=${() => this.openExternalLink('https://github.com/sohzm/jefe')} class="link">📂 GitHub Repository</span
                         ><br />
                         <span @click=${() => this.openExternalLink('https://discord.gg/GCBdubnXfJ')} class="link">💬 Join Discord Community</span>
                     </div>
@@ -797,12 +957,12 @@ class CheatingDaddyApp extends LitElement {
                     <span class="option-label">Keyboard Shortcuts</span>
                     <div class="description">
                         <strong>Window Movement:</strong><br />
-                        <span class="key">${cheddar.isMacOS ? 'Option' : 'Ctrl'}</span> + Arrow Keys - Move the window in 45px increments<br /><br />
+                        <span class="key">${jefe.isMacOS ? 'Option' : 'Ctrl'}</span> + Arrow Keys - Move the window in 45px increments<br /><br />
 
                         <strong>Window Control:</strong><br />
-                        <span class="key">${cheddar.isMacOS ? 'Cmd' : 'Ctrl'}</span> + <span class="key">M</span> - Toggle mouse events (click-through
+                        <span class="key">${jefe.isMacOS ? 'Cmd' : 'Ctrl'}</span> + <span class="key">M</span> - Toggle mouse events (click-through
                         mode)<br />
-                        <span class="key">${cheddar.isMacOS ? 'Cmd' : 'Ctrl'}</span> + <span class="key">&bsol;</span> - Close window or go back<br /><br />
+                        <span class="key">${jefe.isMacOS ? 'Cmd' : 'Ctrl'}</span> + <span class="key">&bsol;</span> - Close window or go back<br /><br />
 
                         <strong>Text Input:</strong><br />
                         <span class="key">Enter</span> - Send text message to AI<br />
@@ -816,7 +976,7 @@ class CheatingDaddyApp extends LitElement {
                         1. <strong>Start a Session:</strong> Enter your Gemini API key and click "Start Session"<br />
                         2. <strong>Customize:</strong> Choose your profile and language in the settings<br />
                         3. <strong>Position Window:</strong> Use keyboard shortcuts to move the window to your desired location<br />
-                        4. <strong>Click-through Mode:</strong> Use <span class="key">${cheddar.isMacOS ? 'Cmd' : 'Ctrl'}</span> +
+                        4. <strong>Click-through Mode:</strong> Use <span class="key">${jefe.isMacOS ? 'Cmd' : 'Ctrl'}</span> +
                         <span class="key">M</span> to make the window click-through<br />
                         5. <strong>Get AI Help:</strong> The AI will analyze your screen and audio to provide assistance<br />
                         6. <strong>Text Messages:</strong> Type questions or requests to the AI using the text input
@@ -837,9 +997,9 @@ class CheatingDaddyApp extends LitElement {
                 <div class="option-group">
                     <span class="option-label">Audio Input</span>
                     <div class="description">
-                        ${cheddar.isMacOS 
+                        ${jefe.isMacOS
                             ? html`<strong>macOS:</strong> Uses SystemAudioDump for system audio capture`
-                            : cheddar.isLinux
+                            : jefe.isLinux
                               ? html`<strong>Linux:</strong> Uses microphone input`
                               : html`<strong>Windows:</strong> Uses loopback audio capture`}<br />
                         The AI listens to conversations and provides contextual assistance based on what it hears.
@@ -849,50 +1009,63 @@ class CheatingDaddyApp extends LitElement {
         `;
     }
 
+    /**
+     * Renders the assistant view, which is active during an AI session.
+     * Displays the AI's responses, provides navigation for multiple responses,
+     * and includes a text input for sending messages to the AI.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the assistant view.
+     */
     renderAssistantView() {
-        let audioInput = 'Microphone';
-        if (cheddar.isMacOS) {
-            audioInput = 'SystemAudioDump';
-        } else if (cheddar.isLinux) {
-            audioInput = 'Microphone';
-        } else {
-            audioInput = 'Loopback Audio';
+        // Determine audio input type string for display (informational)
+        let audioInputType = 'Microphone'; // Default
+        if (jefe.isMacOS) {
+            audioInputType = 'System Audio';
+        } else if (jefe.isLinux) {
+            audioInputType = 'Microphone'; // Explicitly microphone for Linux as per current setup
+        } else { // Windows
+            audioInputType = 'System Audio (Loopback)';
         }
 
-        const profileNames = {
+        const profileNames = { // TODO: This could be part of a shared config or profile definition
             interview: 'Job Interview',
             sales: 'Sales Call',
             meeting: 'Business Meeting',
             presentation: 'Presentation',
             negotiation: 'Negotiation',
+            jefe: 'Jefe (Coding Asst.)'
         };
 
-        const activeInputs = [audioInput, 'Screen'];
+        // const activeInputs = [audioInputType, 'Screen']; // Informational, not directly used in this render
 
-        // Get current response or default message
+        // Determine the current response to display, or a default welcome/status message
         const currentResponse =
-            this.responses.length > 0 && this.currentResponseIndex >= 0
+            this.responses.length > 0 && this.currentResponseIndex >= 0 && this.currentResponseIndex < this.responses.length
                 ? this.responses[this.currentResponseIndex]
-                : `Hey, Im listening to your ${profileNames[this.selectedProfile] || 'session'}?`;
+                : `Hey, I'm listening to your ${profileNames[this.selectedProfile] || this.selectedProfile || 'session'}.`;
 
-        // Response counter text
-        const responseCounter = this.responses.length > 0 ? `${this.currentResponseIndex + 1}/${this.responses.length}` : '';
+        // Format the response counter (e.g., "1/5")
+        const responseCounterText = this.responses.length > 0
+            ? `${this.currentResponseIndex + 1}/${this.responses.length}`
+            : '';
 
         return html`
             <div style="height: 100%; display: flex; flex-direction: column;">
-                <div class="response-container">${currentResponse}</div>
+                <!-- Container for AI responses -->
+                <div class.response-container">${currentResponse}</div>
 
+                <!-- Text input and navigation controls -->
                 <div class="text-input-container">
                     <button
                         class="nav-button"
                         @click=${this.navigateToPreviousResponse}
                         ?disabled=${this.currentResponseIndex <= 0}
-                        title="Previous response"
+                        title="Previous response (Cmd/Ctrl + Left Arrow - if implemented globally)"
                     >
                         ←
                     </button>
 
-                    ${this.responses.length > 0 ? html` <span class="response-counter">${responseCounter}</span> ` : ''}
+                    <!-- Display response counter if there are responses -->
+                    ${this.responses.length > 0 ? html` <span class="response-counter">${responseCounterText}</span> ` : ''}
 
                     <input type="text" id="textInput" placeholder="Type a message to the AI..." @keydown=${this.handleTextKeydown} />
 
@@ -900,7 +1073,7 @@ class CheatingDaddyApp extends LitElement {
                         class="nav-button"
                         @click=${this.navigateToNextResponse}
                         ?disabled=${this.currentResponseIndex >= this.responses.length - 1}
-                        title="Next response"
+                        title="Next response (Cmd/Ctrl + Right Arrow - if implemented globally)"
                     >
                         →
                     </button>
@@ -909,20 +1082,35 @@ class CheatingDaddyApp extends LitElement {
         `;
     }
 
+    /**
+     * Navigates to the previous AI response in the `responses` array.
+     * Decrements `currentResponseIndex` if not already at the first response.
+     */
     navigateToPreviousResponse() {
         if (this.currentResponseIndex > 0) {
             this.currentResponseIndex--;
+            // this.requestUpdate(); // LitElement usually handles this automatically for property changes
         }
     }
 
+    /**
+     * Navigates to the next AI response in the `responses` array.
+     * Increments `currentResponseIndex` if not already at the last response.
+     */
     navigateToNextResponse() {
         if (this.currentResponseIndex < this.responses.length - 1) {
             this.currentResponseIndex++;
+            // this.requestUpdate(); // LitElement usually handles this automatically
         }
     }
 
+    /**
+     * Main render method for the component.
+     * It determines which view to render based on the `currentView` property.
+     * @returns {import('lit-html').TemplateResult} The HTML template for the currently active view.
+     */
     render() {
-        const views = {
+        const views = { // Map view names to their render methods
             main: this.renderMainView(),
             customize: this.renderCustomizeView(),
             help: this.renderHelpView(),
@@ -940,4 +1128,4 @@ class CheatingDaddyApp extends LitElement {
     }
 }
 
-customElements.define('cheating-daddy-app', CheatingDaddyApp);
+customElements.define('jefe-app', JefeApp);

@@ -1,16 +1,28 @@
-from typing import List, Dict, Any, Optional # Added Optional
+# src/utils/context_manager.py
+"""
+Provides the AdvancedContextManager for tracking and managing execution context (trace)
+within the multi-agent system. This can include logging events, retrieving trace history,
+and potentially compressing context for use by agents.
+"""
+
+from typing import List, Dict, Any, Optional
 import datetime
 
-# Assuming logger might be needed, similar to other utils
+# Attempt to import APIManager for context compression and logger.
+# Fallback definitions are provided if run in an environment where these imports might fail.
 try:
     from .logger import get_logger
-    from .api_manager import APIManager # Added
-except ImportError: # Fallback for direct execution or if logger isn't in the same dir as expected
+    from .api_manager import APIManager
+except ImportError:
     import logging
-    # Define APIManager and get_logger as placeholders for fallback if needed
+    # Basic placeholder for APIManager if the real one isn't available.
+    # This allows the module to be imported but compression will fail gracefully.
     class APIManager: # type: ignore
-        def __init__(self, *args, **kwargs): pass
-        async def make_request(self, *args, **kwargs): return {}
+        def __init__(self, *args, **kwargs):
+            self.service_configs: Dict[str, Any] = {} # Ensure service_configs exists for dummy
+        async def make_request(self, *args, **kwargs) -> Dict[str, Any]:
+            # Dummy make_request for fallback; real compression needs a functional APIManager.
+            return {"status": "error", "message": "Fallback APIManager: make_request not implemented."}
 
     def get_logger(name): # type: ignore
         logger = logging.getLogger(name)
@@ -23,65 +35,129 @@ except ImportError: # Fallback for direct execution or if logger isn't in the sa
         return logger
 
 class AdvancedContextManager:
-    def __init__(self, api_manager: Optional[APIManager] = None): # Modified signature
+    """
+    Manages an execution trace and provides utilities for context manipulation.
+
+    The trace is a list of timestamped events, where each event is a dictionary
+    containing an `event_type`, `data`, and any other relevant keyword arguments.
+    This manager can also compress the trace history using an LLM via APIManager.
+    """
+    def __init__(self, api_manager: Optional[APIManager] = None):
+        """
+        Initializes the AdvancedContextManager.
+
+        Args:
+            api_manager: An optional instance of APIManager. If provided,
+                         it enables context compression capabilities.
+        """
         self.logger = get_logger("AdvancedContextManager")
-        self._trace: List[Dict[str, Any]] = []
-        self.api_manager = api_manager # Stored APIManager
+        self._trace: List[Dict[str, Any]] = [] # Internal list to store trace events
+        self.api_manager = api_manager # Store the APIManager instance for compression
+
         if not self.api_manager:
-            self.logger.warning("APIManager not provided to AdvancedContextManager. Context compression will be disabled.")
+            self.logger.warning(
+                "APIManager not provided to AdvancedContextManager. "
+                "Context compression feature will be disabled."
+            )
         self.logger.info("AdvancedContextManager initialized.")
 
-    def add_trace_event(self, event_type: str, data: Dict[str, Any], **kwargs: Any):
-        """Adds an event to the execution trace."""
+    def add_trace_event(self, event_type: str, data: Dict[str, Any], **kwargs: Any) -> None:
+        """
+        Adds a new event to the execution trace.
+
+        Each event is timestamped (UTC) and includes the event type,
+        associated data, and any additional keyword arguments passed.
+
+        Args:
+            event_type: A string describing the type of event (e.g., "agent_call_start").
+            data: A dictionary containing data relevant to the event.
+            **kwargs: Arbitrary additional key-value pairs to include in the event.
+        """
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        event = {
+        event: Dict[str, Any] = {
             "timestamp": timestamp,
             "event_type": event_type,
-            "data": data,
-            **kwargs # Allow arbitrary extra fields for specific events
+            "data": data, # Main data payload for the event
+            **kwargs     # Include any other keyword arguments in the event
         }
         self._trace.append(event)
-        self.logger.debug(f"Added trace event: {event_type} - {str(data)[:100]}...")
+        self.logger.debug(f"Added trace event: Type='{event_type}', Data='{str(data)[:100]}...'")
 
     def get_full_trace(self) -> List[Dict[str, Any]]:
-        """Returns the entire execution trace."""
-        return self._trace.copy() # Return a copy to prevent external modification
+        """
+        Retrieves a copy of the entire execution trace.
+
+        Returns:
+            A list of all event dictionaries recorded in the trace.
+            A copy is returned to prevent external modification of the internal trace.
+        """
+        return self._trace.copy()
 
     def get_recent_context(self, n_events: int = 5) -> List[Dict[str, Any]]:
-        """Returns the last n_events from the trace."""
-        return self._trace[-n_events:].copy() if n_events > 0 else []
-
-    def clear_trace(self):
-        """Clears the current trace."""
-        self._trace = []
-        self.logger.info("Execution trace cleared.")
-
-    async def compress_context(self, history: Optional[List[Dict[str, Any]]] = None, model_name: str = "claude-3-haiku-20240307") -> str:
         """
-        Compresses the given history (or the current trace if None) using an LLM.
-        Returns the compressed text or an error message if compression fails.
+        Retrieves a copy of the last 'n_events' from the execution trace.
+
+        Args:
+            n_events: The number of recent events to retrieve. Defaults to 5.
+
+        Returns:
+            A list of the most recent 'n_events' dictionaries. Returns an empty
+            list if `n_events` is not positive or if the trace is shorter.
+        """
+        if n_events <= 0:
+            return []
+        return self._trace[-n_events:].copy()
+
+    def clear_trace(self) -> None:
+        """Clears all events from the current execution trace."""
+        self._trace = []
+        self.logger.info("Execution trace has been cleared.")
+
+    async def compress_context(self,
+                               history: Optional[List[Dict[str, Any]]] = None,
+                               model_name: str = "claude-3-haiku-20240307") -> str:
+        """
+        Compresses a given history of trace events (or the current trace if None)
+        into a concise summary using a Language Model (LLM) via the APIManager.
+
+        Args:
+            history: An optional list of event dictionaries to compress. If None,
+                     the current internal trace (`self._trace`) is used.
+            model_name: The name of the LLM model to use for compression
+                        (defaulting to a Claude Haiku model).
+
+        Returns:
+            A string containing the compressed summary of the history, or an
+            error message if compression fails or is unavailable.
         """
         if not self.api_manager:
-            self.logger.error("Cannot compress context: APIManager not available.")
-            return "Error: Context compression unavailable (APIManager missing)."
+            self.logger.error("Cannot compress context: APIManager instance is not available.")
+            return "Error: Context compression unavailable (APIManager not provided to ContextManager)."
 
         target_history = history if history is not None else self._trace
         if not target_history:
+            self.logger.info("No history provided or available in trace to compress.")
             return "No history to compress."
 
-        # Simple formatting of history to string. Could be more sophisticated.
-        history_string = "\n".join([f"- {event['event_type']}: {str(event['data'])[:200]}" for event in target_history])
+        # Format the history into a single string for the LLM prompt.
+        # Each event is represented as "- event_type: data_summary..."
+        # Data is truncated to avoid excessively long individual event strings.
+        history_string = "\n".join(
+            [f"- {event.get('event_type', 'unknown_event')}: {str(event.get('data', {}))[:200]}"
+             for event in target_history]
+        )
 
-        # Limit history string length to avoid overly long prompts (e.g. 10k chars for safety)
-        max_history_len = 10000
+        # Truncate the overall history string if it's too long for the LLM prompt.
+        max_history_len = 10000  # Define a safe maximum length for the history part of the prompt
         if len(history_string) > max_history_len:
-            history_string = history_string[-max_history_len:] # Take the most recent part
-            self.logger.warning(f"History string truncated to last {max_history_len} chars for compression prompt.")
+            history_string = history_string[-max_history_len:] # Keep the most recent part
+            self.logger.warning(f"History string for compression was truncated to the last {max_history_len} characters.")
 
+        # Construct the prompt for the LLM.
         compression_prompt = f"""
 Please compress the following execution trace into a concise summary of key decisions, critical context, and essential outcomes.
 Preserve all information crucial for future decisions by an AI agent. Focus on the flow of actions and results.
-Avoid conversational fluff. Aim for a structured summary if possible.
+Avoid conversational fluff. Aim for a structured summary if possible, perhaps using bullet points for key items.
 
 Execution Trace:
 {history_string}
@@ -89,52 +165,56 @@ Execution Trace:
 Concise Summary:
 """
 
-        self.logger.info(f"Attempting context compression with model {model_name} for {len(target_history)} events.")
+        self.logger.info(f"Attempting context compression using model '{model_name}' for {len(target_history)} events.")
 
         try:
-            # Ensure APIManager is available and the service is configured
-            # Assuming service_configs is accessible on APIManager instance
+            # Check if the required service (e.g., "claude") is configured in APIManager
             if not hasattr(self.api_manager, 'service_configs') or "claude" not in self.api_manager.service_configs:
-                 self.logger.error("Claude service not configured in APIManager. Cannot compress context.")
-                 return "Error: Claude service not configured for compression."
+                 self.logger.error(f"Service 'claude' (for model '{model_name}') not configured in APIManager. Cannot compress context.")
+                 return f"Error: Service 'claude' for compression (model {model_name}) not configured."
 
+            # Make the API call for compression
             response = await self.api_manager.make_request(
-                service_name="claude", # Assuming 'claude' is configured in APIManager
-                endpoint="messages", # Standard Claude messages endpoint
+                service_name="claude", # Hardcoded to 'claude' for now, assuming it hosts the compression model
+                endpoint="messages",   # Standard endpoint for Claude messages API
                 method="POST",
                 data={
-                    "model": model_name,
+                    "model": model_name, # Specify the compression model
                     "messages": [{"role": "user", "content": compression_prompt}],
-                    "max_tokens": 1000, # Max tokens for the summary
-                    "temperature": 0.2, # Lower temperature for more factual summary
+                    "max_tokens": 1000,  # Max tokens for the generated summary
+                    "temperature": 0.2,  # Lower temperature for more factual, less creative summary
                 }
             )
 
+            # Process the response
             if response.get("status") == "success" and response.get("content"):
                 compressed_text = ""
-                # Standard Claude API response for messages
+                # Standard Claude API Messages response structure often has content in a list of dicts
                 if isinstance(response.get("content"), list) and len(response.get("content")) > 0:
-                    if isinstance(response.get("content")[0], dict) and "text" in response.get("content")[0]:
-                         compressed_text = response.get("content")[0].get("text","")
-                elif isinstance(response.get("content"), str): # Fallback if content is just a string (less likely for Claude messages)
+                    content_block = response.get("content")[0]
+                    if isinstance(content_block, dict) and "text" in content_block:
+                         compressed_text = content_block.get("text","")
+                elif isinstance(response.get("content"), str): # Fallback if content is already a string
                     compressed_text = response.get("content")
 
                 if not compressed_text:
-                    self.logger.error(f"Compression call succeeded but no text found in response. Response: {str(response)[:300]}")
-                    return f"Error: Compression failed (empty response content). Original history length: {len(target_history)} events."
+                    self.logger.error(f"Compression call succeeded but no text found in response. Response (first 300 chars): {str(response)[:300]}")
+                    return f"Error: Compression failed (empty or malformed response content). Original history length: {len(target_history)} events."
 
                 self.logger.info("Context compression successful.")
-                return compressed_text
+                return compressed_text.strip() # Return stripped text
             else:
-                error_msg = response.get("message", str(response.get("details", "Unknown error during compression.")))
-                self.logger.error(f"Context compression failed: {error_msg}")
-                return f"Error: Context compression failed. Details: {error_msg}. Original history length: {len(target_history)} events."
-        except Exception as e:
+                # Handle API call failure or error status in response
+                error_msg = response.get("message", str(response.get("details", "Unknown error during compression API call.")))
+                self.logger.error(f"Context compression API call failed: {error_msg}")
+                return f"Error: Context compression API call failed. Details: {error_msg}. Original history length: {len(target_history)} events."
+
+        except Exception as e: # Catch any other exceptions during the process
             self.logger.error(f"Exception during context compression: {e}", exc_info=True)
             return f"Error: Exception during context compression - {str(e)}. Original history length: {len(target_history)} events."
 
 if __name__ == '__main__':
-    import asyncio # Add this import
+    import asyncio
 
     # Dummy APIManager for testing compression (won't make real calls unless configured)
     # Need to ensure the fallback APIManager is correctly defined if the real one isn't imported

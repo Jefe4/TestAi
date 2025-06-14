@@ -20,7 +20,8 @@ try:
     from ..agents.cursor_agent import CursorAgent 
     from ..agents.windsurf_agent import WindsurfAgent 
     from ..agents.gemini_agent import GeminiAgent
-    from ..utils.helpers import get_nested_value 
+    from ..utils.helpers import get_nested_value
+    from ..utils.context_manager import AdvancedContextManager # Added
 except ImportError:
     import sys
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -37,6 +38,7 @@ except ImportError:
     from src.agents.windsurf_agent import WindsurfAgent # type: ignore
     from src.agents.gemini_agent import GeminiAgent # type: ignore
     from src.utils.helpers import get_nested_value # type: ignore
+    from src.utils.context_manager import AdvancedContextManager # type: ignore # Added
 
 
 class Coordinator:
@@ -50,6 +52,7 @@ class Coordinator:
         self.api_manager = APIManager(config_path=agent_config_path)
         self.task_analyzer = TaskAnalyzer()
         self.routing_engine = RoutingEngine()
+        self.context_manager = AdvancedContextManager(api_manager=self.api_manager) # Modified
         self.agents: Dict[str, BaseAgent] = {}
         self.agent_classes: Dict[str, type[BaseAgent]] = {
             "deepseek": DeepSeekAgent, "claude": ClaudeAgent,
@@ -180,7 +183,8 @@ class Coordinator:
     async def _execute_branch_sequentially(
         self, branch_step_templates: List[Dict], initial_branch_input: str, branch_id_for_logging: str,
         global_query_data_overrides: Optional[Dict[str, Any]],
-        main_execution_context: Dict[str, Any] # Context from before the parallel block
+        main_execution_context: Dict[str, Any], # Context from before the parallel block
+        context_manager: AdvancedContextManager # Added
     ) -> Optional[Dict[str, Any]]:
         self.logger.info(f"Executing branch '{branch_id_for_logging}' with {len(branch_step_templates)} steps.")
         branch_internal_context: Dict[str, Any] = {}
@@ -243,15 +247,27 @@ class Coordinator:
             agent_query_data.update(effective_configs)
 
             self.logger.debug(f"Branch '{branch_id_for_logging}' step {i+1} ({agent_name}) query data: {str(agent_query_data)[:200]}...")
+            context_manager.add_trace_event(
+                "branch_agent_call_start",
+                {"branch_id": branch_id_for_logging, "step_index": i, "agent_name": agent_name, "query_data": agent_query_data}
+            )
             try:
                 response = await current_agent.process_query(agent_query_data) # ASYNC CALL
             except Exception as e:
                 msg = f"Exception in branch '{branch_id_for_logging}', step {i+1} ({agent_name}): {e}"
                 self.logger.error(msg, exc_info=True)
+                context_manager.add_trace_event(
+                    "branch_agent_call_error",
+                    {"branch_id": branch_id_for_logging, "step_index": i, "agent_name": agent_name, "error": str(e)}
+                )
                 return {"status": "error", "message": msg, "agent_name": agent_name}
             
             if step_def.get("output_id"): branch_internal_context[step_def["output_id"]] = response
             last_branch_response = response
+            context_manager.add_trace_event(
+                "branch_agent_call_end",
+                {"branch_id": branch_id_for_logging, "step_index": i, "agent_name": agent_name, "response": response}
+            )
             if response.get("status") != "success":
                 self.logger.warning(f"Agent {agent_name} in branch '{branch_id_for_logging}' returned error: {response.get('message')}")
                 return response
@@ -269,21 +285,27 @@ class Coordinator:
 
     async def process_query(self, query: str, query_data_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self.logger.info(f"Coordinator received query: '{query[:100]}...'")
+        self.context_manager.clear_trace()
+        self.context_manager.add_trace_event("query_received", {"query": query, "query_data_overrides": query_data_overrides if query_data_overrides else {}})
+
         if not self.agents:
             self.logger.error("No agents registered. Cannot process query.")
             return {"status": "error", "message": "No agents available."}
 
-        analysis_result = self.task_analyzer.analyze_query(query, self.agents)
+        analysis_result = self.task_analyzer.analyze_query(query, self.agents, context_trace=self.context_manager.get_full_trace())
+        self.context_manager.add_trace_event("task_analysis_complete", {"analysis_result": analysis_result})
         self.logger.debug(f"Task analysis: {analysis_result}")
         
-        # selected_agents from RoutingEngine are agent instances, ordered if from a plan
-        # For parallel block, RoutingEngine should return a flat list of all agents involved across all branches.
-        # The Coordinator then uses the execution_plan to structure calls.
-        # Let's assume RoutingEngine returns agents listed in plan if plan exists.
         selected_agent_instances_from_router = self.routing_engine.select_agents(analysis_result, self.agents)
+        self.context_manager.add_trace_event(
+            "agent_routing_complete",
+            {"selected_agent_names": [agent.get_name() for agent in selected_agent_instances_from_router],
+             "num_selected": len(selected_agent_instances_from_router)}
+        )
         
-        if not selected_agent_instances_from_router: # No agents selected by router (plan invalid or no suggestions/fallback)
+        if not selected_agent_instances_from_router:
             self.logger.warning("Router selected no agents.")
+            self.context_manager.add_trace_event("routing_error", {"message": "Router selected no agents"})
             return {"status": "error", "message": "No suitable agent found."}
 
         execution_plan_details = analysis_result.get("execution_plan")
@@ -313,10 +335,11 @@ class Coordinator:
                 branch_coroutines.append(
                     self._execute_branch_sequentially(
                         branch_step_templates, 
-                        initial_query_input, # Main initial input for "original_query" refs
+                        initial_query_input,
                         f"branch_{idx}", 
                         query_data_overrides,
-                        execution_context.copy() # Pass context from *before* this parallel block
+                        execution_context.copy(),
+                        self.context_manager # Pass context manager
                     )
                 )
             
@@ -463,12 +486,15 @@ class Coordinator:
                     if step_resp.get("content") is None and step_idx < len(execution_plan_details) -1:
                          return {"status": "error", "message": f"Agent {seq_agent_name} in seq plan missing 'content'.", "agent_name": seq_agent_name}
                     # current_input_for_sequence = str(step_resp.get("content","")) # This was implicit, now explicit via input_mapping
+                    self.context_manager.add_trace_event(
+                        "sequential_agent_call_end",
+                        {"step_index": step_idx, "agent_name": seq_agent_name, "response": step_resp}
+                    )
                 # End of sequential plan loop
                 # --- END REVISED MAIN SEQUENTIAL LOOP ---
         
         elif len(selected_agent_instances_from_router) == 1: # Single agent suggested, no plan
             primary_agent = selected_agent_instances_from_router[0]
-            # ... (existing single agent logic, now needs await) ...
             agent_query_data: Dict[str, Any] = {}
             processed_prompt = analysis_result.get("processed_query_for_agent", query)
             gemini_agent_class = self.agent_classes.get("gemini")
@@ -485,11 +511,24 @@ class Coordinator:
                     if "prompt" in temp_overrides: agent_query_data["prompt"] = temp_overrides.pop("prompt")
                     if "prompt_parts" in temp_overrides: temp_overrides.pop("prompt_parts", None)
                 agent_query_data.update(temp_overrides)
+
             self.logger.debug(f"Single agent query data for {primary_agent.get_name()}: {agent_query_data}")
+            self.context_manager.add_trace_event(
+                "single_agent_call_start",
+                {"agent_name": primary_agent.get_name(), "query_data": agent_query_data}
+            )
             try:
                 final_response = await primary_agent.process_query(agent_query_data) # ASYNC CALL
+                self.context_manager.add_trace_event(
+                    "single_agent_call_end",
+                    {"agent_name": primary_agent.get_name(), "response": final_response}
+                )
             except Exception as e:
                 self.logger.error(f"Error with single agent {primary_agent.get_name()}: {e}", exc_info=True)
+                self.context_manager.add_trace_event(
+                    "single_agent_call_error",
+                    {"agent_name": primary_agent.get_name(), "error": str(e)}
+                )
                 return {"status": "error", "message": f"Failed query with {primary_agent.get_name()}: {str(e)}"}
 
         else: # Fallback to simple sequential (legacy, if router returns multiple agents but TaskAnalyzer had no plan)
@@ -503,16 +542,30 @@ class Coordinator:
                     temp_overrides = query_data_overrides.copy()
                     temp_overrides.pop("prompt", None); temp_overrides.pop("prompt_parts", None)
                     agent_query_data.update(temp_overrides)
+
+                self.context_manager.add_trace_event(
+                    "legacy_sequential_agent_call_start",
+                    {"step_index": i, "agent_name": agent_instance.get_name(), "query_data": agent_query_data}
+                )
                 try:
                     response = await agent_instance.process_query(agent_query_data) # ASYNC CALL
+                    self.context_manager.add_trace_event(
+                        "legacy_sequential_agent_call_end",
+                        {"step_index": i, "agent_name": agent_instance.get_name(), "response": response}
+                    )
                     legacy_final_response = response
                     if response.get("status") != "success" or response.get("content") is None:
                         return response
                     current_input_content = str(response.get("content"))
                 except Exception as e:
+                    self.context_manager.add_trace_event(
+                        "legacy_sequential_agent_call_error",
+                        {"step_index": i, "agent_name": agent_instance.get_name(), "error": str(e)}
+                    )
                     return {"status": "error", "message": f"Error in legacy seq with {agent_instance.get_name()}: {str(e)}"}
             final_response = legacy_final_response
         
+        self.context_manager.add_trace_event("final_response_generated", {"final_response": final_response if final_response is not None else {}})
         return final_response if final_response is not None else {"status": "error", "message": "Processing resulted in no final response."}
 
 
@@ -536,25 +589,31 @@ if __name__ == '__main__':
                 print(f"\nProcessing query 1: '{query1}'")
                 response1 = await coordinator.process_query(query1)
                 print(f"Response 1: {response1}")
+                print(f"--- Trace for query: '{query1[:50]}...' ---")
+                for event in coordinator.context_manager.get_full_trace(): print(event)
 
                 query2 = "Write a Python function to calculate factorial."
                 print(f"\nProcessing query 2: '{query2}'")
                 response2 = await coordinator.process_query(query2)
                 print(f"Response 2: {response2}")
+                print(f"--- Trace for query: '{query2[:50]}...' ---")
+                for event in coordinator.context_manager.get_full_trace(): print(event)
 
-                # Query for a sequential plan (example assumes TaskAnalyzer is set up to create one for such a query)
                 query_sequential = "summarize critique and list keywords for this document about AI ethics."
                 print(f"\nProcessing sequential plan query: '{query_sequential}'")
                 response_sequential = await coordinator.process_query(query_sequential)
                 print(f"Response (sequential): {response_sequential}")
+                print(f"--- Trace for query: '{query_sequential[:50]}...' ---")
+                for event in coordinator.context_manager.get_full_trace(): print(event)
 
-                # Query for a parallel plan (uncommented and activated)
                 query_market = "concurrent market and competitor analysis for new EV startup"
                 print(f"\nProcessing parallel plan query (market): '{query_market}'")
                 response_market = await coordinator.process_query(query_market)
                 print(f"Response (market): {response_market}")
+                print(f"--- Trace for query: '{query_market[:50]}...' ---")
+                for event in coordinator.context_manager.get_full_trace(): print(event)
 
-            if os.name == 'nt': # Windows patch for asyncio if needed for basic demo run
+            if os.name == 'nt':
                  asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
             asyncio.run(main_test())
 

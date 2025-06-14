@@ -121,8 +121,11 @@ class TaskAnalyzer:
             })
         return processed_steps
 
-    def analyze_query(self, query: str, available_agents: Dict[str, BaseAgent]) -> Dict[str, Any]:
+    def analyze_query(self, query: str, available_agents: Dict[str, BaseAgent], context_trace: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         self.logger.info(f"Analyzing query: '{query[:100]}...' with {len(available_agents)} agents available.")
+        if context_trace:
+            self.logger.debug(f"Received context_trace with {len(context_trace)} events.")
+        # The actual use of context_trace will be implemented in a later task.
         
         lower_query = query.lower()
         
@@ -140,8 +143,27 @@ class TaskAnalyzer:
         determined_intent = matched_entry["intent"]
         self.logger.debug(f"Query matched type '{matched_type_name}' (as {determined_query_type}) with intent '{determined_intent}'.")
 
+        # Complexity Score Logic
+        complexity_score = "moderate" # Default
+        if "parallel_plan_template" in matched_entry or "sequential_plan_template" in matched_entry:
+            complexity_score = "complex"
+        elif matched_type_name == "general_query" or matched_type_name == "question_answering":
+            if len(lower_query.split()) < 15: # Arbitrary short query length
+                complexity_score = "simple"
+
+        # Keyword-based complexity adjustments
+        if any(s_kw in lower_query for s_kw in ["briefly", "simple", "one sentence"]):
+            if complexity_score == "moderate": complexity_score = "simple"
+            # Don't override "complex" plans to "simple" just due to these keywords easily
+        if any(c_kw in lower_query for c_kw in ["detailed", "comprehensive", "in-depth", "research", "analyze and compare"]):
+            if complexity_score == "simple": complexity_score = "moderate" # Upgrade simple
+            elif complexity_score == "moderate": complexity_score = "complex" # Upgrade moderate
+
+        self.logger.debug(f"Determined complexity score: {complexity_score}")
+
         suggested_agent_names: List[str] = []
-        execution_plan: List[Dict[str, Any]] = [] 
+        execution_plan: List[Dict[str, Any]] = []
+        has_defined_plan = False
 
         if "parallel_plan_template" in matched_entry:
             parallel_template = matched_entry["parallel_plan_template"]
@@ -162,15 +184,18 @@ class TaskAnalyzer:
                 "branches": processed_branches
             }]
             suggested_agent_names = []
+            has_defined_plan = True
 
         elif "sequential_plan_template" in matched_entry:
             plan_template = matched_entry["sequential_plan_template"]
             self.logger.info(f"Found sequential plan template for intent '{determined_intent}'.")
             seq_id_prefix = f"sq_{matched_type_name}"
             execution_plan = self._process_plan_steps(plan_template, seq_id_prefix)
-            suggested_agent_names = [] 
+            suggested_agent_names = []
+            has_defined_plan = True
         
         elif "capabilities_needed" in matched_entry:
+            # This block runs if no predefined plan was matched
             capabilities_needed = set(matched_entry["capabilities_needed"])
             # ... (capability-based suggestion logic - remains unchanged) ...
             self.logger.debug(f"Looking for agents with capabilities: {capabilities_needed}")
@@ -203,21 +228,31 @@ class TaskAnalyzer:
             if not suggested_agent_names and available_agents:
                  self.logger.warning(f"No agents matched capabilities for query type '{determined_query_type}'.")
         
+
+        # Recommended Approach Logic
+        recommended_approach = "multi_agent_plan" # Default
+        if not has_defined_plan and complexity_score == "simple":
+            # Only suggest single_agent_with_tools if no specific plan was found AND complexity is simple.
+            # This implies it's a capability-based suggestion for a simple query.
+            recommended_approach = "single_agent_with_tools"
+
         analysis = {
             "original_query": query,
             "query_type": determined_query_type,
-            "complexity": "medium", 
+            "complexity": complexity_score, # Updated
             "intent": determined_intent,
             "suggested_agents": suggested_agent_names, 
             "execution_plan": execution_plan, 
             "processed_query_for_agent": query, 
-            "requires_human_intervention": False 
+            "requires_human_intervention": False,
+            "recommended_approach": recommended_approach # New field
         }
 
         self.logger.info(
             f"Analysis complete. Query Type: '{determined_query_type}', Intent: '{determined_intent}', "
+            f"Complexity: '{complexity_score}', Recommended Approach: '{recommended_approach}', "
             f"Plan type: {'Parallel' if 'parallel_plan_template' in matched_entry else 'Sequential' if 'sequential_plan_template' in matched_entry else 'Suggestion'}, "
-            f"Plan steps/branches: {len(execution_plan[0]['branches']) if 'parallel_plan_template' in matched_entry and execution_plan else len(execution_plan) if execution_plan else 'N/A'}, "
+            f"Plan steps/branches: {len(execution_plan[0]['branches']) if 'parallel_plan_template' in matched_entry and execution_plan and execution_plan[0].get('type') == 'parallel_block' else len(execution_plan) if execution_plan else 'N/A'}, "
             f"Suggested (if no plan): {suggested_agent_names if suggested_agent_names else 'N/A'}"
         )
         return analysis
@@ -258,10 +293,12 @@ if __name__ == '__main__':
 
     for i, test_query in enumerate(queries_to_test):
         print(f"\n--- Query {i+1}: \"{test_query[:70]}...\" ---")
-        analysis_result = analyzer.analyze_query(test_query, agents_for_test) 
+        analysis_result = analyzer.analyze_query(test_query, agents_for_test)
         print(f"  Original Query: {analysis_result['original_query'][:70]}...")
         print(f"  Determined Query Type: {analysis_result['query_type']}")
         print(f"  Determined Intent: {analysis_result['intent']}")
+        print(f"  Complexity: {analysis_result['complexity']}") # Added print
+        print(f"  Recommended Approach: {analysis_result['recommended_approach']}") # Added print
         
         if analysis_result.get("execution_plan"):
             plan = analysis_result["execution_plan"]

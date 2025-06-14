@@ -555,140 +555,228 @@ if __name__ == '__main__':
     # Define MockAPIManager and MockJefeContext if they are not importable or for isolated testing
     # This ensures `python path/to/jefe_agent.py` can run with minimal setup for basic checks.
 
-    # Fallback MockAPIManager if the real one isn't easily available for this direct script run
-    if 'APIManager' not in globals() or APIManager.__module__ != 'src.utils.api_manager':
-        class MockAPIManager: # type: ignore
-            def __init__(self, *args, **kwargs):
-                self.logger = get_logger("MockAPIManager_JefeAgentTest")
-                self.logger.info("Instantiated MockAPIManager for JefeAgent test.")
-            async def call_llm_service(self, *args, **kwargs) -> Dict[str, Any]:
-                self.logger.info(f"MockAPIManager.call_llm_service called with: {args}, {kwargs}")
-                return {"status": "success", "content": "Mocked LLM response."}
-    else: # If the real APIManager was imported, use it (or a more specific mock if needed)
-        MockAPIManager = APIManager # type: ignore
+    # Using the actual APIManager for the test, but tools' execute will be mocked.
+    # This means APIManager won't actually be called by mocked tools.
+    # If APIManager is needed for context compression tests, it can be the real one.
 
-    # Fallback MockBaseTool (very basic)
-    if TYPE_CHECKING: # This helps type checkers but won't run at runtime if BaseTool is not imported
-        from ..tools.base_tool import BaseTool as ActualBaseTool
-        MockBaseTool = ActualBaseTool
-    else: # Runtime fallback
-        class MockBaseTool:
-            def __init__(self, tool_name, tool_description, api_manager=None):
-                self.tool_name = tool_name
-                self.tool_description = tool_description
-                self.api_manager = api_manager
-                self.logger = get_logger(f"MockTool.{tool_name}")
-            async def execute(self, context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
-                self.logger.info(f"MockTool {self.tool_name} execute called with context: {context.summarize(50,50)}, kwargs: {kwargs}")
-                return {"status": "success", "data": f"Mock result from {self.tool_name}", "confidence": 0.9}
-            def get_description(self) -> Dict[str, str]: return {"name": self.tool_name, "description": self.tool_description}
-        # Make BaseTool refer to MockBaseTool if the real one wasn't imported due to TYPE_CHECKING
-        if 'BaseTool' not in globals(): BaseTool = MockBaseTool # type: ignore
+    # Minimal MockAPIManager if the real one causes issues or for extreme isolation
+    # For this test, we primarily rely on mocking tool.execute, so APIManager's role in tool calls is bypassed.
+    class TestMockAPIManager(APIManager):
+        def __init__(self, *args, **kwargs):
+            super().__init__(service_configs={"test_service": {"api_key": "dummy", "base_url": "dummy"}}, *args, **kwargs) # Ensure base init is okay
+            self.logger = get_logger("TestMockAPIManager_JefeAgent")
+            self.logger.info("Instantiated TestMockAPIManager for JefeAgent test.")
 
+        async def call_llm_service(self, *args, **kwargs) -> Dict[str, Any]:
+            # This might be called by context_manager for compression, so provide a basic mock response.
+            self.logger.info(f"TestMockAPIManager.call_llm_service called with: {args}, {kwargs}. This is likely for context compression.")
+            return {"status": "success", "content": "Mocked LLM response for compression."}
 
     async def main_jefe_agent_test():
-        print("--- JefeAgent Conceptual Test ---")
+        print("--- JefeAgent Integration Test with Mocked Tools & Enhanced Synthesis ---")
 
-        # Instantiate with a mock APIManager
-        mock_api_manager = MockAPIManager() # type: ignore
-
-        # To test _load_tools, we might need to create dummy tool files in a temporary tools dir
-        # or mock os.listdir, importlib.import_module, etc.
-        # For simplicity here, we'll assume _load_tools might return an empty dict if no tools dir/files.
-        # Or, we can manually populate self.tools with mock tools for this test.
+        # Instantiate with a mock APIManager (or real if it's simple enough for setup)
+        # The key is that tools' .execute() will be mocked, so APIManager calls from tools are bypassed.
+        test_api_manager = TestMockAPIManager()
 
         agent_config = {"default_model": "jefe-model-v1"}
-        jefe = JefeAgent(agent_name="TestJefe001", api_manager=mock_api_manager, config=agent_config)
+        jefe_agent = JefeAgent(agent_name="TestJefe001", api_manager=test_api_manager, config=agent_config)
 
-        # Manually add a mock tool for testing internal logic if dynamic loading is complex to set up here
-        class MockCodeAnalyzerTool(MockBaseTool): # type: ignore
-            def __init__(self, api_manager_instance): # Renamed to avoid conflict
-                super().__init__("code_analyzer_tool", "Analyzes code for issues.", api_manager_instance)
-            async def execute(self, context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
-                findings = "Found potential syntax error in screen content." if "error" in context.screen_content.lower() else "Code seems okay at first glance."
-                return {"status": "success", "data": {"findings": findings, "recommendation": "Review highlighted lines."}, "confidence": 0.8}
+        # --- Tool Mocking Setup ---
+        # Store original execute methods to restore later if needed (optional for script end)
+        original_tools_execute = {}
+        tool_keys_to_mock = ["code_analyzer", "debug_assistant", "architecture_advisor", "performance_optimizer"]
 
-        if not jefe.tools.get("code_analyzer"): # If not loaded dynamically
-             jefe.tools["code_analyzer"] = MockCodeAnalyzerTool(mock_api_manager) # type: ignore
-             jefe.logger.info("Manually added MockCodeAnalyzerTool for testing.")
+        for tool_key in tool_keys_to_mock:
+            if tool_key in jefe_agent.tools:
+                original_tools_execute[tool_key] = jefe_agent.tools[tool_key].execute
+            else:
+                jefe_agent.logger.warning(f"Tool '{tool_key}' not found in JefeAgent's loaded tools for mocking. Test might be incomplete.")
 
+        # Define mock execute functions
+        async def mock_code_analyzer_execute(context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
+            return {"status": "success", "tool_used": "code_analyzer",
+                    "primary_finding": "Minor syntax error in loop.",
+                    "recommendation": "Fix syntax at line 10.", "confidence": 0.9}
 
-        print(f"\nJefeAgent Capabilities: {jefe.get_capabilities()}")
+        async def mock_debug_assistant_execute(context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
+            return {"status": "success", "tool_used": "debug_assistant",
+                    "primary_finding": "Null pointer exception risk.",
+                    "recommendation": "Add null check before accessing object.", "confidence": 0.8}
 
-        # Test 1: Simple text query (adapted to JefeContext)
-        print("\n--- Test 1: Simple Text Query ---")
-        query_data_1 = {"prompt": "Explain Python list comprehensions."}
-        response_1 = await jefe.process_query(query_data_1)
-        print("Response 1:")
-        for key, value in response_1.items():
-            print(f"  {key}: {str(value)[:200] + '...' if len(str(value)) > 200 else value}")
+        async def mock_arch_advisor_execute(context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
+            return {"status": "success", "tool_used": "architecture_advisor",
+                    "data": {"architectural_advice_raw": "Consider CQRS pattern for scalability.",
+                             "primary_finding": "Scalability bottleneck in current design.",
+                             "recommendation": "Implement CQRS.",
+                             "additional_value": "This will also improve read performance."},
+                    "confidence": 0.85}
 
+        async def mock_perf_optimizer_execute(context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
+            return {"status": "success", "tool_used": "performance_optimizer",
+                    "data": {"performance_analysis_raw": "N+1 query problem found in data access layer.",
+                             "primary_finding": "N+1 query problem.",
+                             "recommendation": "Use eager loading or batch fetching.",
+                             "additional_value": "This will reduce database load significantly."},
+                    "confidence": 0.92}
 
-        # Test 2: Real-time input scenario - simple complexity
-        print("\n--- Test 2: Real-time Input (Simple Complexity) ---")
-        context_2 = JefeContext(
-            screen_content="def hello():\n  print('world'", # Missing parenthesis
-            audio_transcript="User: I think I have a syntax error here, what's wrong?",
-            current_ide="VSCode",
-            programming_language="Python",
-            error_messages=["SyntaxError: unexpected EOF while parsing"]
-        )
-        response_2 = await jefe.process_realtime_input(context_2)
-        print("Response 2:")
-        for key, value in response_2.items():
-            print(f"  {key}: {str(value)[:200] + '...' if len(str(value)) > 200 else value}")
+        async def mock_failing_tool_execute(tool_name: str, context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
+            return {"status": "error", "tool_used": tool_name, "error": f"Mock error from {tool_name}.", "confidence": 0.1}
 
-        # Test 3: Real-time input - moderate (triggering parallel if tools were diverse)
-        print("\n--- Test 3: Real-time Input (Moderate Complexity - Parallel Tools Simulation) ---")
-        # Add another mock tool for parallel test
-        class MockDocSearchTool(MockBaseTool): # type: ignore
-             def __init__(self, api_manager_instance):
-                super().__init__("documentation_search_tool", "Searches documentation.", api_manager_instance)
-             async def execute(self, context: JefeContext, **kwargs: Any) -> Dict[str, Any]:
-                return {"status": "success", "data": {"summary": f"Found docs related to: {context.programming_language or 'general topics'}"}, "confidence": 0.7}
+        # Apply mocks
+        if "code_analyzer" in jefe_agent.tools: jefe_agent.tools["code_analyzer"].execute = mock_code_analyzer_execute
+        if "debug_assistant" in jefe_agent.tools: jefe_agent.tools["debug_assistant"].execute = mock_debug_assistant_execute
+        if "architecture_advisor" in jefe_agent.tools: jefe_agent.tools["architecture_advisor"].execute = mock_arch_advisor_execute
+        if "performance_optimizer" in jefe_agent.tools: jefe_agent.tools["performance_optimizer"].execute = mock_perf_optimizer_execute
 
-        if not jefe.tools.get("documentation_search"):
-            jefe.tools["documentation_search"] = MockDocSearchTool(mock_api_manager) # type: ignore
-            jefe.logger.info("Manually added MockDocSearchTool for testing.")
-            # Update capabilities if we added a tool manually after init
-            # This is a bit of a hack for testing; normally tools are loaded at init.
-            jefe.task_analyzer.task_type_keywords[JefeTaskType.KNOWLEDGE_QUERY] = ["explain"] # Add keyword for this tool for test
-            # Make sure suggested_tools in TaskAnalysis can pick this up for some query
+        print(f"\nJefeAgent Capabilities (loaded {len(jefe_agent.tools)} tools): {jefe_agent.get_capabilities()['tools_available']}")
 
-        context_3 = JefeContext(
-            screen_content="import pandas as pd\ndf = pd.DataFrame() # User is working with pandas",
-            audio_transcript="User: Explain how pandas DataFrames work and how to optimize their memory usage.",
-            programming_language="Python",
-            project_type="Data Analysis"
-        )
-        response_3 = await jefe.process_realtime_input(context_3)
-        print("Response 3 (Parallel Analysis Simulation):")
-        for key, value in response_3.items():
-            print(f"  {key}: {str(value)[:200] + '...' if len(str(value)) > 200 else value}")
+        # --- Test Scenarios ---
 
-        # Test 4: Context Compression (if manager has interactions)
-        print("\n--- Test 4: Context Compression via JefeContextManager ---")
-        if jefe.context_manager.get_full_conversation_history():
-            # Ensure there are enough interactions to attempt compression based on manager's thresholds
-            jefe.context_manager.max_history_len_before_compression = 1
-            jefe.context_manager.recent_interactions_to_keep = 0
-            await jefe.context_manager._compress_old_context() # Call directly for test
-            print(f"Compressed Memory: {jefe.context_manager.get_compressed_memory_summary()}")
+        # Scenario 1: Simple Code Analysis (triggers _handle_simple_assistance)
+        print("\n--- Test 1: Simple Code Analysis ---")
+        # To force simple, we make task_analyzer result simple and suggest only code_analyzer
+        original_task_analyzer_analyze = jefe_agent.task_analyzer.analyze_context
+        def mock_analyze_simple_ca(ctx: JefeContext) -> TaskAnalysis:
+            return TaskAnalysis(task_type=JefeTaskType.CODING_ASSISTANCE, complexity="simple", immediate_issues=[],
+                                suggested_tools=["code_analyzer"], priority="medium", project_context_summary="")
+        jefe_agent.task_analyzer.analyze_context = mock_analyze_simple_ca
+
+        context_simple_ca = JefeContext(screen_content="def foo():\n  x = y + z", programming_language="Python")
+        response_simple_ca = await jefe_agent.process_realtime_input(context_simple_ca)
+        print("Response (Simple CA):")
+        print(f"  Content: {response_simple_ca['content']}")
+        print(f"  Confidence: {response_simple_ca['confidence']}")
+        print(f"  Tools Used: {response_simple_ca['tools_used']}")
+        assert "Fix syntax at line 10" in response_simple_ca["content"]
+        assert response_simple_ca["tools_used"] == ["code_analyzer"]
+        jefe_agent.task_analyzer.analyze_context = original_task_analyzer_analyze # Restore
+
+        # Scenario 2: Architecture Advice (triggers _handle_simple_assistance with arch tool)
+        print("\n--- Test 2: Architecture Advice ---")
+        def mock_analyze_arch(ctx: JefeContext) -> TaskAnalysis:
+            return TaskAnalysis(task_type=JefeTaskType.ARCHITECTURE_ADVICE, complexity="simple", immediate_issues=[],
+                                suggested_tools=["architecture_advisor"], priority="high", project_context_summary="")
+        jefe_agent.task_analyzer.analyze_context = mock_analyze_arch
+        context_arch = JefeContext(audio_transcript="Need advice on scaling my monolith.")
+        response_arch = await jefe_agent.process_realtime_input(context_arch)
+        print("Response (Architecture):")
+        print(f"  Content: {response_arch['content']}")
+        print(f"  Confidence: {response_arch['confidence']}")
+        print(f"  Tools Used: {response_arch['tools_used']}")
+        assert "Implement CQRS" in response_arch["content"]
+        assert "architecture_advisor" in response_arch["tools_used"]
+        jefe_agent.task_analyzer.analyze_context = original_task_analyzer_analyze
+
+        # Scenario 3: Performance Optimization (triggers _handle_simple_assistance with perf tool)
+        print("\n--- Test 3: Performance Optimization ---")
+        def mock_analyze_perf(ctx: JefeContext) -> TaskAnalysis:
+            return TaskAnalysis(task_type=JefeTaskType.PERFORMANCE_OPTIMIZATION, complexity="simple", immediate_issues=[],
+                                suggested_tools=["performance_optimizer"], priority="high", project_context_summary="")
+        jefe_agent.task_analyzer.analyze_context = mock_analyze_perf
+        context_perf = JefeContext(screen_content="SELECT * FROM users JOIN orders...", audio_transcript="This query is slow.")
+        response_perf = await jefe_agent.process_realtime_input(context_perf)
+        print("Response (Performance):")
+        print(f"  Content: {response_perf['content']}")
+        print(f"  Confidence: {response_perf['confidence']}")
+        print(f"  Tools Used: {response_perf['tools_used']}")
+        assert "Use eager loading" in response_perf["content"]
+        assert "performance_optimizer" in response_perf["tools_used"]
+        jefe_agent.task_analyzer.analyze_context = original_task_analyzer_analyze
+
+        # Scenario 4: Parallel Tool Usage & Synthesis (triggers _handle_parallel_analysis)
+        print("\n--- Test 4: Parallel Tools & Synthesis (Code Analysis + Debugging) ---")
+        # Mock task analyzer to suggest multiple tools and moderate complexity
+        def mock_analyze_parallel(ctx: JefeContext) -> TaskAnalysis:
+            return TaskAnalysis(task_type=JefeTaskType.DEBUGGING_ASSISTANCE, complexity="moderate", immediate_issues=["Error on screen"],
+                                suggested_tools=["code_analyzer", "debug_assistant"], priority="high", project_context_summary="")
+        jefe_agent.task_analyzer.analyze_context = mock_analyze_parallel
+
+        context_parallel = JefeContext(screen_content="if x == 0: y = 1/x", error_messages=["ZeroDivisionError"])
+        response_parallel = await jefe_agent.process_realtime_input(context_parallel)
+        print("Response (Parallel CA+Debug):")
+        print(f"  Content: {response_parallel['content']}")
+        print(f"  Confidence: {response_parallel['confidence']}") # Should be avg of 0.9 and 0.8, weighted by success ratio
+        print(f"  Tools Used: {sorted(response_parallel['tools_used'])}") # Sort for consistent assert
+        assert "Fix syntax at line 10" in response_parallel["content"] # From CA
+        assert "Add null check" in response_parallel["content"]   # From Debug
+        assert sorted(response_parallel["tools_used"]) == sorted(["code_analyzer", "debug_assistant"])
+        # Expected confidence: ( (0.9+0.8)/2 * 0.7) + (1.0 * 0.3) = (0.85 * 0.7) + 0.3 = 0.595 + 0.3 = 0.895 -> rounded to 0.9
+        assert abs(response_parallel['confidence'] - 0.9) < 0.01
+
+        # Sub-Scenario 4b: One tool fails in parallel execution
+        print("\n--- Test 4b: Parallel Tools - One Fails ---")
+        if "debug_assistant" in jefe_agent.tools: # Ensure tool exists before trying to mock
+            jefe_agent.tools["debug_assistant"].execute = lambda context, **kwargs: mock_failing_tool_execute("debug_assistant", context, **kwargs)
+
+        response_parallel_fail = await jefe_agent.process_realtime_input(context_parallel)
+        print("Response (Parallel CA success, Debug fail):")
+        print(f"  Content: {response_parallel_fail['content']}")
+        print(f"  Confidence: {response_parallel_fail['confidence']}")
+        print(f"  Tools Used: {sorted(response_parallel_fail['tools_used'])}")
+        assert "Fix syntax at line 10" in response_parallel_fail["content"] # CA finding
+        assert "Mock error from debug_assistant" in response_parallel_fail["content"] # Error message from failed tool in primary_issue
+        assert sorted(response_parallel_fail["tools_used"]) == sorted(["code_analyzer", "debug_assistant"])
+        # Expected confidence: successful_confidences = [0.9], avg_successful_confidence = 0.9. success_ratio = 1/2 = 0.5
+        # final_confidence = (0.9 * 0.7) + (0.5 * 0.3) = 0.63 + 0.15 = 0.78
+        assert abs(response_parallel_fail['confidence'] - 0.78) < 0.01
+
+        # Restore debug_assistant if it was mocked to fail
+        if "debug_assistant" in original_tools_execute: jefe_agent.tools["debug_assistant"].execute = mock_debug_assistant_execute
+        jefe_agent.task_analyzer.analyze_context = original_task_analyzer_analyze # Restore main analyzer
+
+        # Scenario 5: All Tools Fail (triggers _handle_all_tools_failed via _synthesize_tool_results)
+        print("\n--- Test 5: All Tools Fail ---")
+        def mock_analyze_multi_fail(ctx: JefeContext) -> TaskAnalysis:
+            return TaskAnalysis(task_type=JefeTaskType.GENERAL_ASSISTANCE, complexity="moderate", immediate_issues=[],
+                                suggested_tools=["code_analyzer", "performance_optimizer"], priority="medium", project_context_summary="")
+        jefe_agent.task_analyzer.analyze_context = mock_analyze_multi_fail
+
+        # Make all relevant tools fail for this test
+        if "code_analyzer" in jefe_agent.tools:
+            jefe_agent.tools["code_analyzer"].execute = lambda context, **kwargs: mock_failing_tool_execute("code_analyzer", context, **kwargs)
+        if "performance_optimizer" in jefe_agent.tools:
+            jefe_agent.tools["performance_optimizer"].execute = lambda context, **kwargs: mock_failing_tool_execute("performance_optimizer", context, **kwargs)
+
+        context_all_fail = JefeContext(general_query="This is broken somehow.")
+        response_all_fail = await jefe_agent.process_realtime_input(context_all_fail)
+        print("Response (All Tools Fail):")
+        print(f"  Content: {response_all_fail['content']}")
+        print(f"  Status: {response_all_fail['status']}")
+        print(f"  Confidence: {response_all_fail['confidence']}")
+        print(f"  Tools Used: {sorted(response_all_fail['tools_used'])}")
+        assert "Unable to complete analysis due to tool failures" in response_all_fail["identified_issues_summary"] # Check summary field
+        assert response_all_fail["status"] == "error"
+        assert response_all_fail["confidence"] == 0.1
+        assert sorted(response_all_fail["tools_used"]) == sorted(["code_analyzer", "performance_optimizer"])
+
+        jefe_agent.task_analyzer.analyze_context = original_task_analyzer_analyze # Restore
+
+        # Restore original tool execute methods (optional, good practice if tests were longer or part of a suite)
+        for tool_key, original_execute in original_tools_execute.items():
+            if tool_key in jefe_agent.tools:
+                jefe_agent.tools[tool_key].execute = original_execute
+        jefe_agent.logger.info("Restored original tool execute methods.")
+
+        # Test Context Compression (minimal, just to ensure it runs without error if history exists)
+        print("\n--- Final Test: Context Compression (minimal check) ---")
+        if jefe_agent.context_manager.get_full_conversation_history():
+            jefe_agent.context_manager.max_history_len_before_compression = 1
+            jefe_agent.context_manager.recent_interactions_to_keep = 0
+            await jefe_agent.context_manager._compress_old_context()
+            print(f"Compressed Memory Summary: {jefe_agent.context_manager.get_compressed_memory_summary()}")
+            assert "Mocked LLM response for compression" in jefe_agent.context_manager.get_compressed_memory_summary()
         else:
-            print("Skipping compression test as no interactions were logged to context_manager.")
+            print("Skipping active compression test as no interactions were logged to context_manager by these tests.")
 
 
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main_jefe_agent_test())
-    print("\n--- JefeAgent conceptual test finished ---")
+    print("\n--- JefeAgent integration test with mocked tools finished ---")
 
 # TODO:
-# - Implement sophisticated tool selection logic in _select_primary_tool_name, _select_parallel_tool_names, etc.
-# - Implement robust synthesis logic in _synthesize_parallel_results and for complex research.
-# - Flesh out _update_context_with_findings for complex research.
-# - Refine interaction between JefeTaskAnalyzer's suggestions and tool selection here.
-# - Ensure BaseTool and concrete tool __init__ signatures are compatible with _load_tools.
-#   (e.g., tools define their own name/desc or _load_tools infers it more robustly).
-# - Add actual tool implementations in the tools directory.
-# - More comprehensive error handling and state management.
+# - Implement sophisticated tool selection logic in _select_primary_tool_name, _select_parallel_tool_names, etc. (Covered by JefeTaskAnalyzer)
+# - Flesh out _update_context_with_findings for complex research. (Still a TODO in main code)
+# - Refine interaction between JefeTaskAnalyzer's suggestions and tool selection here. (Partially tested by mocking analyze_context)
+# - Add actual tool implementations in the tools directory. (Done for several tools)
